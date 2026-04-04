@@ -12,6 +12,38 @@ from backend.config import get_settings
 settings = get_settings()
 
 
+def _safe_read_lines(file_path: str, base_dir: str) -> list[str] | None:
+    """
+    Read lines from a file only if it resolves safely within base_dir.
+
+    Both absolute and relative file_path values are supported.  In all cases
+    the resolved real path must be a descendent of the resolved real base_dir,
+    which prevents directory-traversal attacks.
+
+    Returns a list of lines on success, or None when the path cannot be
+    validated or the file cannot be read.
+    """
+    base_real = os.path.realpath(base_dir)
+
+    if os.path.isabs(file_path):
+        candidate = os.path.realpath(file_path)
+    else:
+        candidate = os.path.realpath(os.path.join(base_real, file_path))
+
+    # Strict containment check -- the resolved candidate must live inside base_dir
+    if not (candidate.startswith(base_real + os.sep) or candidate == base_real):
+        return None
+
+    if not os.path.isfile(candidate):
+        return None
+
+    try:
+        with open(candidate, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.readlines()
+    except OSError:
+        return None
+
+
 def extract_code_snippet(
     file_path: str,
     line: int,
@@ -21,26 +53,27 @@ def extract_code_snippet(
     """
     Extract code snippet around the given line with context_lines above and below.
     Returns the snippet as a string with line numbers.
+
+    file_path is resolved only when base_dir is supplied. When base_dir is
+    omitted the function returns an empty placeholder so that callers can still
+    build an enriched finding without requiring source-code access.
     """
     if context_lines is None:
         context_lines = settings.CODE_CONTEXT_LINES
 
-    resolved = _resolve_path(file_path, base_dir)
-    if resolved is None:
-        return f"# File not found: {file_path}"
+    if not base_dir:
+        return f"# Source directory not configured; cannot read: {file_path}"
 
-    try:
-        with open(resolved, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except OSError as e:
-        return f"# Error reading file: {e}"
+    file_lines = _safe_read_lines(file_path, base_dir)
+    if file_lines is None:
+        return f"# File not found or access denied: {file_path}"
 
-    total = len(lines)
+    total = len(file_lines)
     start = max(0, line - 1 - context_lines)
     end = min(total, line - 1 + context_lines + 1)
 
     snippet_lines = []
-    for i, src_line in enumerate(lines[start:end], start=start + 1):
+    for i, src_line in enumerate(file_lines[start:end], start=start + 1):
         marker = ">>>" if i == line else "   "
         snippet_lines.append(f"{i:5d} {marker} {src_line.rstrip()}")
 
@@ -55,15 +88,14 @@ def extract_function_name(
     """
     Attempt to identify the enclosing function/method name using simple heuristics.
     Works for C/C++, Python, Java, JavaScript.
+
+    Returns an empty string when the file cannot be resolved safely.
     """
-    resolved = _resolve_path(file_path, base_dir)
-    if resolved is None:
+    if not base_dir:
         return ""
 
-    try:
-        with open(resolved, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except OSError:
+    file_lines = _safe_read_lines(file_path, base_dir)
+    if file_lines is None:
         return ""
 
     # Walk backwards from the target line to find function/method definition
@@ -76,8 +108,8 @@ def extract_function_name(
     # Java/JS method pattern
     java_func_re = re.compile(r"^\s*(?:public|private|protected|static|final|\s)+\s+\w+\s+(\w+)\s*\(")
 
-    for i in range(min(line - 1, len(lines) - 1), -1, -1):
-        src = lines[i]
+    for i in range(min(line - 1, len(file_lines) - 1), -1, -1):
+        src = file_lines[i]
         for pattern in [py_func_re, c_func_re, java_func_re]:
             m = pattern.match(src)
             if m:
@@ -141,33 +173,3 @@ def enrich_finding(
 
     enriched["execution_path"] = build_execution_path(trace)
     return enriched
-
-
-def _resolve_path(file_path: str, base_dir: str | None) -> str | None:
-    """Try to resolve a file path, optionally relative to base_dir.
-
-    When a base_dir is provided, the resolved path is validated to be
-    inside base_dir to prevent directory traversal attacks.
-    """
-    if not file_path:
-        return None
-
-    if base_dir:
-        base_real = os.path.realpath(base_dir)
-        candidate = os.path.realpath(os.path.join(base_dir, file_path))
-        # Guard against directory traversal: candidate must be inside base_dir
-        if candidate.startswith(base_real + os.sep) or candidate == base_real:
-            if os.path.exists(candidate):
-                return candidate
-
-    if os.path.isabs(file_path):
-        resolved = os.path.realpath(file_path)
-        if os.path.exists(resolved):
-            return resolved
-        return None
-
-    # Relative path without base_dir: resolve against CWD
-    resolved = os.path.realpath(file_path)
-    if os.path.exists(resolved):
-        return resolved
-    return None

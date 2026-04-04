@@ -29,46 +29,67 @@ def c_file(tmp_path):
     return str(f)
 
 
+@pytest.fixture
+def c_dir(tmp_path):
+    """Fixture that returns both the file path and its parent directory."""
+    f = tmp_path / "test.c"
+    f.write_text(SAMPLE_C_CODE)
+    return str(tmp_path), str(f)
+
+
 class TestExtractCodeSnippet:
-    def test_basic_extraction(self, c_file):
-        snippet = extract_code_snippet(c_file, 6, context_lines=2)
+    def test_basic_extraction(self, c_dir):
+        base_dir, c_file = c_dir
+        snippet = extract_code_snippet(c_file, 6, context_lines=2, base_dir=base_dir)
         assert "strcpy" in snippet
         assert "6" in snippet
 
-    def test_highlights_target_line(self, c_file):
-        snippet = extract_code_snippet(c_file, 6, context_lines=2)
+    def test_highlights_target_line(self, c_dir):
+        base_dir, c_file = c_dir
+        snippet = extract_code_snippet(c_file, 6, context_lines=2, base_dir=base_dir)
         assert ">>>" in snippet
 
-    def test_missing_file(self):
-        snippet = extract_code_snippet("/nonexistent/file.c", 1)
-        assert "not found" in snippet.lower() or "error" in snippet.lower()
+    def test_missing_file(self, tmp_path):
+        snippet = extract_code_snippet("/nonexistent/file.c", 1, base_dir=str(tmp_path))
+        assert "not found" in snippet.lower() or "access denied" in snippet.lower()
 
-    def test_context_lines_respected(self, c_file):
-        snippet = extract_code_snippet(c_file, 6, context_lines=1)
+    def test_no_base_dir_returns_placeholder(self):
+        snippet = extract_code_snippet("src/main.c", 1)
+        assert "not configured" in snippet.lower() or "cannot read" in snippet.lower()
+
+    def test_context_lines_respected(self, c_dir):
+        base_dir, c_file = c_dir
+        snippet = extract_code_snippet(c_file, 6, context_lines=1, base_dir=base_dir)
         lines = snippet.strip().split("\n")
         assert len(lines) == 3  # 1 before + target + 1 after
 
     def test_base_dir_resolution(self, tmp_path):
-        f = tmp_path / "src" / "test.c"
-        f.parent.mkdir()
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        f = src_dir / "test.c"
         f.write_text(SAMPLE_C_CODE)
         snippet = extract_code_snippet("src/test.c", 6, context_lines=2, base_dir=str(tmp_path))
         assert "strcpy" in snippet
 
 
 class TestExtractFunctionName:
-    def test_find_function(self, c_file):
-        fn = extract_function_name(c_file, 6)
+    def test_find_function(self, c_dir):
+        base_dir, c_file = c_dir
+        fn = extract_function_name(c_file, 6, base_dir=base_dir)
         assert fn == "process_data"
 
-    def test_missing_file(self):
-        fn = extract_function_name("/nonexistent/file.c", 1)
+    def test_no_base_dir_returns_empty(self):
+        fn = extract_function_name("src/main.c", 1)
+        assert fn == ""
+
+    def test_missing_file(self, tmp_path):
+        fn = extract_function_name("/nonexistent/file.c", 1, base_dir=str(tmp_path))
         assert fn == ""
 
     def test_python_function(self, tmp_path):
         py_file = tmp_path / "test.py"
         py_file.write_text("def my_func(x):\n    return x + 1\n")
-        fn = extract_function_name(str(py_file), 2)
+        fn = extract_function_name(str(py_file), 2, base_dir=str(tmp_path))
         assert fn == "my_func"
 
 
@@ -98,6 +119,19 @@ class TestPathTraversalSecurity:
         snippet = extract_code_snippet("main.c", 1, base_dir=str(sub_dir))
         assert "main" in snippet
 
+    def test_absolute_path_outside_base_dir_blocked(self, tmp_path):
+        # Create two separate directories
+        dir_a = tmp_path / "proj_a"
+        dir_a.mkdir()
+        dir_b = tmp_path / "proj_b"
+        dir_b.mkdir()
+        secret_file = dir_b / "secret.c"
+        secret_file.write_text("// top secret\n")
+
+        # Try to access a file in dir_b using base_dir of dir_a
+        snippet = extract_code_snippet(str(secret_file), 1, base_dir=str(dir_a))
+        assert "top secret" not in snippet
+
 
 class TestBuildExecutionPath:
     def test_empty_trace(self):
@@ -122,17 +156,19 @@ class TestBuildExecutionPath:
 
 
 class TestEnrichFinding:
-    def test_enrichment_with_real_file(self, c_file):
+    def test_enrichment_with_real_file(self, tmp_path):
+        c_file = tmp_path / "test.c"
+        c_file.write_text(SAMPLE_C_CODE)
         finding = {
             "tool": "cppcheck",
             "rule_id": "bufferOverflow",
-            "file_path": c_file,
+            "file_path": str(c_file),
             "line_start": 6,
             "message": "Buffer overflow",
             "sast_severity": "high",
             "code_flows": [],
         }
-        enriched = enrich_finding(finding)
+        enriched = enrich_finding(finding, base_dir=str(tmp_path))
         assert "strcpy" in enriched.get("code_snippet", "")
         assert enriched.get("function_name") == "process_data"
         assert enriched.get("execution_path") == []
@@ -151,3 +187,18 @@ class TestEnrichFinding:
         assert "code_snippet" in enriched
         assert "function_name" in enriched
         assert "execution_path" in enriched
+
+    def test_enrichment_without_base_dir(self):
+        finding = {
+            "tool": "cppcheck",
+            "rule_id": "test",
+            "file_path": "src/main.c",
+            "line_start": 10,
+            "message": "test",
+            "sast_severity": "medium",
+            "code_flows": [],
+        }
+        enriched = enrich_finding(finding)
+        # Without base_dir, should still return a finding (with placeholder code_snippet)
+        assert "code_snippet" in enriched
+        assert enriched["function_name"] == ""
