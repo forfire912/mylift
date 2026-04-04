@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # Code context
     CODE_CONTEXT_LINES: int = 30
+    SOURCE_CODE_DIR: str = ""  # 被分析项目的源代码根目录，留空则跳过代码片段提取
 
     # CORS
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]

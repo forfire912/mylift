@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import apiService, { ScanTask } from '../services/api'
 import UploadTaskModal from '../components/UploadTaskModal'
+import { useProgress } from '../context/ProgressContext'
 
 export default function TaskListPage() {
   const [tasks, setTasks] = useState<ScanTask[]>([])
@@ -9,6 +10,7 @@ export default function TaskListPage() {
   const [showModal, setShowModal] = useState(false)
   const [analyzingId, setAnalyzingId] = useState<number | null>(null)
   const navigate = useNavigate()
+  const { openPanel } = useProgress()
 
   const load = async () => {
     setLoading(true)
@@ -26,11 +28,21 @@ export default function TaskListPage() {
     setAnalyzingId(task.id)
     try {
       await apiService.analyzeTask(task.id)
-      alert(`任务 "${task.name}" 已提交分析队列`)
+      openPanel(task.id)
     } catch {
       alert('提交分析失败，请检查服务是否正常运行')
     } finally {
       setAnalyzingId(null)
+    }
+  }
+
+  const handleClearAll = async () => {
+    if (!window.confirm('确定要清空所有任务和漏洞数据吗？此操作不可恢复。')) return
+    try {
+      await apiService.deleteAllTasks()
+      await load()
+    } catch {
+      alert('清空失败，请重试')
     }
   }
 
@@ -44,7 +56,16 @@ export default function TaskListPage() {
     <div>
       <div className="page-header">
         <h1 className="page-title">扫描任务</h1>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ 上传扫描结果</button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            className="btn btn-default"
+            style={{ color: '#ff4d4f', borderColor: '#ff4d4f' }}
+            onClick={handleClearAll}
+          >
+            清空所有数据
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ 上传扫描结果</button>
+        </div>
       </div>
 
       {loading ? (

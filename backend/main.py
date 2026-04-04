@@ -11,7 +11,7 @@ import os
 from backend.config import get_settings
 from backend.database import engine
 from backend.models import Base
-from backend.api import router, router_v2
+from backend.api import router, settings_router
 
 settings = get_settings()
 
@@ -37,7 +37,7 @@ app.add_middleware(
 
 # API routes
 app.include_router(router, prefix="/api/v1")
-app.include_router(router_v2)
+app.include_router(settings_router, prefix="/api/v1")
 
 # Serve frontend static files if built
 _frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")

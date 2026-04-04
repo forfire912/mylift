@@ -1,14 +1,12 @@
 from backend.api.routes import router
-from backend.api.routes_v2 import router_v2
+from backend.api.settings_routes import router as settings_router
 from backend.api.schemas import (
-    ScanTaskCreate, ScanTaskResponse, FindingResponse,
+    ScanTaskResponse, FindingResponse,
     FindingListResponse, StatsResponse, AnalyzeRequest,
 )
 
 __all__ = [
-    "router",
-    "router_v2",
-    "ScanTaskCreate", "ScanTaskResponse", "FindingResponse",
+    "router", "settings_router",
+    "ScanTaskResponse", "FindingResponse",
     "FindingListResponse", "StatsResponse", "AnalyzeRequest",
 ]
-# api package

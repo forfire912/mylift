@@ -85,7 +85,9 @@ def analyze_finding_task(self, finding_id: int):
 
     except Exception as e:
         logger.error("Task failed for finding %s: %s", finding_id, e)
-        raise self.retry(exc=e, countdown=30, max_retries=2)
+        # 指数退避：第1次30s、第2次60s、第3次120s，最多重试3次
+        countdown = 30 * (2 ** self.request.retries)
+        raise self.retry(exc=e, countdown=countdown, max_retries=3)
     finally:
         db.close()
 

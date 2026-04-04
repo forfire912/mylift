@@ -52,13 +52,26 @@ def compute_risk_score(
     severity_score = SEVERITY_BASE_SCORE.get(sast_severity.lower(), 20)
 
     # 2. LLM confidence adjustment (0-35)
+    # README 公式：LLM_Confidence × 35（仅对确认漏洞）
+    # 对误报：置信度越高说明越确定是误报，直接返回保底低分
     llm_score = 0.0
     if llm_confidence is not None and is_vulnerable is not None:
         if is_vulnerable:
             llm_score = llm_confidence * 35
         else:
-            # False positive - reduce base score
-            llm_score = -(llm_confidence * 20)
+            # 误报：评分不参与累加，直接用 max(0, severity*0.3) 作为最终分
+            fp_score = round(max(0.0, severity_score * 0.3), 2)
+            return {
+                "risk_score": fp_score,
+                "final_severity": _score_to_severity(fp_score),
+                "breakdown": {
+                    "severity_score": severity_score,
+                    "llm_score": 0.0,
+                    "exploitability_score": 0,
+                    "context_score": 0,
+                    "note": "false_positive",
+                },
+            }
 
     # 3. Exploitability: trace depth (0-15)
     trace_depth = len(execution_path) if execution_path else 0

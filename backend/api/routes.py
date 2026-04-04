@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import datetime
+import threading
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
+from backend.config import get_settings
 from backend.database import get_db
 from backend.models import Finding, ScanTask, SeverityLevel
 from backend.adapters import get_adapter
@@ -20,9 +22,82 @@ from backend.api.schemas import (
     ScanTaskCreate, ScanTaskResponse, FindingResponse,
     FindingListResponse, StatsResponse, AnalyzeRequest,
 )
+from backend.api.settings_routes import _get_all as _get_runtime_settings
+
+settings = get_settings()
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ─────────────────────────────────────────────────────────────
+# In-memory task progress store
+# ─────────────────────────────────────────────────────────────
+_task_progress: dict[int, dict] = {}
+_progress_lock = threading.Lock()
+
+_AGENT_META = {
+    1: "代码理解",
+    2: "路径分析",
+    3: "漏洞判定",
+    4: "修复建议",
+}
+
+
+def _init_progress(task_id: int, total: int) -> None:
+    with _progress_lock:
+        _task_progress[task_id] = {
+            "task_id": task_id,
+            "status": "running",
+            "finding_total": total,
+            "finding_current": 0,
+            "current_agent": 0,
+            "started_at": datetime.datetime.utcnow().isoformat(),
+            "finished_at": None,
+            "agents": {
+                str(i): {
+                    "label": label,
+                    "status": "pending",  # pending|running|done|error
+                    "output": "",
+                    "started_at": None,
+                    "finished_at": None,
+                }
+                for i, label in _AGENT_META.items()
+            },
+        }
+
+
+def _set_agent_status(
+    task_id: int,
+    agent_num: int,
+    status: str,
+    output: str = "",
+    finding_current: int | None = None,
+) -> None:
+    with _progress_lock:
+        p = _task_progress.get(task_id)
+        if p is None:
+            return
+        a = p["agents"][str(agent_num)]
+        a["status"] = status
+        if output:
+            a["output"] = output[:2000]  # cap to 2 KB
+        now = datetime.datetime.utcnow().isoformat()
+        if status == "running":
+            a["started_at"] = now
+            p["current_agent"] = agent_num
+        if status in ("done", "error"):
+            a["finished_at"] = now
+        if finding_current is not None:
+            p["finding_current"] = finding_current
+
+
+def _finish_progress(task_id: int, status: str = "done") -> None:
+    with _progress_lock:
+        p = _task_progress.get(task_id)
+        if p:
+            p["status"] = status
+            p["finished_at"] = datetime.datetime.utcnow().isoformat()
+            p["current_agent"] = 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -32,38 +107,46 @@ router = APIRouter()
 @router.post("/tasks", response_model=ScanTaskResponse, status_code=201)
 def create_scan_task(
     payload: ScanTaskCreate,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """
-    Upload raw SAST output. The system parses it, converts to SARIF,
-    enriches with code context, and persists findings.
+    上传 SAST 工具报告内容（Cppcheck XML / Coverity JSON / Klocwork JSON），
+    系统自动解析、转换为 SARIF、上下文增强并持久化 Finding。
     """
-    adapter = get_adapter(payload.tool)
-    raw_findings = adapter.parse(payload.raw_input)
+    tool = payload.tool
+    raw_input = payload.raw_input
+
+    if tool not in ("cppcheck", "coverity", "klocwork"):
+        raise HTTPException(status_code=422, detail="不支持的工具类型，仅支持 cppcheck / coverity / klocwork")
+
+    adapter = get_adapter(tool)
+    raw_findings = adapter.parse(raw_input)
 
     if not raw_findings:
-        raise HTTPException(status_code=422, detail="No findings parsed from input.")
+        raise HTTPException(status_code=422, detail="未能从文件中解析出任何 Finding，请确认文件格式正确")
 
-    sarif_doc = findings_to_sarif(payload.tool, raw_findings)
+    sarif_doc = findings_to_sarif(tool, raw_findings)
     normalized = sarif_to_findings(sarif_doc)
+
+    _cfg = _get_runtime_settings(db)
+    source_code_dir = _cfg.get("source_code_dir") or settings.SOURCE_CODE_DIR or None
 
     task = ScanTask(
         name=payload.name,
-        tool=payload.tool,
+        tool=tool,
         status="parsed",
-        raw_input=payload.raw_input,
+        raw_input=raw_input,
         sarif_output=json.dumps(sarif_doc),
     )
     db.add(task)
     db.flush()
 
     for nd in normalized:
-        enriched = enrich_finding(nd)
+        enriched = enrich_finding(nd, base_dir=source_code_dir)
         finding = Finding(
             task_id=task.id,
             rule_id=enriched.get("rule_id"),
-            tool=enriched.get("tool", payload.tool),
+            tool=enriched.get("tool", tool),
             file_path=enriched.get("file_path"),
             line_start=enriched.get("line_start"),
             line_end=enriched.get("line_end"),
@@ -151,29 +234,118 @@ def trigger_analysis(
             return {"message": f"Queued all findings in task {task_id} for analysis"}
     except Exception as e:
         # Celery not available, run synchronously in background
-        background_tasks.add_task(_analyze_task_sync, task_id, db)
+        background_tasks.add_task(_analyze_task_sync, task_id)
         return {"message": "Analysis started (sync fallback - Celery unavailable)"}
 
 
-def _analyze_task_sync(task_id: int, db: Session):
-    """Synchronous fallback analysis when Celery is not available."""
-    from backend.agents import run_analysis_pipeline
-    from backend.scoring import compute_risk_score
+def _analyze_task_sync(task_id: int) -> None:
+    """Step-by-step analysis with per-agent progress tracking."""
+    from backend.agents import (
+        agent_code_understanding, agent_path_analysis,
+        agent_vulnerability_judgment, agent_fix_suggestion,
+    )
+    from backend.agents.llm_agents import _get_client, _get_runtime_cfg
     from backend.database import SessionLocal
 
     sync_db = SessionLocal()
     try:
         findings = sync_db.query(Finding).filter(Finding.task_id == task_id).all()
-        for finding in findings:
+        _init_progress(task_id, len(findings))
+        cfg = _get_runtime_cfg()
+        client = _get_client(cfg)
+
+        for idx, finding in enumerate(findings):
+            finding_idx = idx + 1
             try:
-                finding_dict = _finding_to_dict(finding)
-                result = run_analysis_pipeline(finding_dict)
+                fd = _finding_to_dict(finding)
+
+                # Agent 1
+                _set_agent_status(task_id, 1, "running", finding_current=finding_idx)
+                cu = agent_code_understanding(fd, client)
+                _set_agent_status(task_id, 1, "done", output=cu)
+
+                # Agent 2
+                _set_agent_status(task_id, 2, "running")
+                pa = agent_path_analysis(fd, cu, client)
+                _set_agent_status(task_id, 2, "done", output=pa)
+
+                # Agent 3
+                _set_agent_status(task_id, 3, "running")
+                judgment = agent_vulnerability_judgment(fd, cu, pa, client)
+                _set_agent_status(task_id, 3, "done",
+                    output=f"is_vulnerable={judgment['is_vulnerable']}  "
+                           f"confidence={judgment['confidence']:.2f}\n{judgment['reason']}")
+
+                # Agent 4
+                _set_agent_status(task_id, 4, "running")
+                fix = agent_fix_suggestion(fd, judgment, client)
+                _set_agent_status(task_id, 4, "done", output=fix["fix_suggestion"])
+
+                result = {
+                    "llm_code_understanding": cu,
+                    "llm_path_analysis": pa,
+                    "is_vulnerable": judgment["is_vulnerable"],
+                    "llm_confidence": judgment["confidence"],
+                    "llm_reason": judgment["reason"],
+                    "fix_suggestion": fix["fix_suggestion"],
+                    "patch_suggestion": fix["patch_suggestion"],
+                }
                 _update_finding_from_result(finding, result, sync_db)
                 sync_db.commit()
+
+                # Reset agent statuses for next finding
+                for i in range(1, 5):
+                    _set_agent_status(task_id, i, "pending")
+
             except Exception as e:
                 logger.error("Analysis failed for finding %s: %s", finding.id, e)
+                _set_agent_status(task_id, 1, "error", output=str(e))
+
+        _finish_progress(task_id, "done")
+
+        # Update task status
+        task = sync_db.query(ScanTask).filter(ScanTask.id == task_id).first()
+        if task:
+            task.status = "analyzed"
+            sync_db.commit()
+
+    except Exception as e:
+        logger.error("Task analysis failed for task %s: %s", task_id, e)
+        _finish_progress(task_id, "error")
     finally:
         sync_db.close()
+
+
+@router.get("/tasks/{task_id}/progress")
+def get_task_progress(task_id: int):
+    """Return in-memory analysis progress for a task."""
+    with _progress_lock:
+        p = _task_progress.get(task_id)
+    if p is None:
+        return {
+            "task_id": task_id,
+            "status": "not_started",
+            "finding_total": 0,
+            "finding_current": 0,
+            "current_agent": 0,
+            "started_at": None,
+            "finished_at": None,
+            "agents": {},
+        }
+    import copy
+    return copy.deepcopy(p)
+
+
+@router.delete("/tasks", status_code=204)
+def delete_all_tasks(db: Session = Depends(get_db)):
+    """Delete ALL tasks and findings. Irreversible."""
+    db.query(Finding).delete()
+    db.query(ScanTask).delete()
+    db.commit()
+    # Clear progress store
+    with _progress_lock:
+        _task_progress.clear()
+
 
 
 # ─────────────────────────────────────────────────────────────

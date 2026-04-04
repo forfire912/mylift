@@ -72,3 +72,12 @@ class Finding(Base):
     analyzed_at = Column(DateTime, nullable=True)
 
     task = relationship("ScanTask", back_populates="findings")
+
+
+class SystemConfig(Base):
+    """Key-value store for runtime-configurable system settings (LLM config, agent prompts, etc.)."""
+    __tablename__ = "system_config"
+
+    key = Column(String(128), primary_key=True, index=True)
+    value = Column(Text, nullable=False, default="")
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

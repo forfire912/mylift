@@ -37,3 +37,6 @@ celerybeat-schedule
 
 # Docker volumes
 data/
+
+# Runtime PID files
+.pids/

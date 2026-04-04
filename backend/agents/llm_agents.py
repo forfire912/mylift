@@ -11,23 +11,60 @@ import json
 import re
 import logging
 from typing import Any
-from openai import OpenAI, AsyncOpenAI
+from openai import OpenAI
 from backend.config import get_settings
 
-settings = get_settings()
+_env = get_settings()
 logger = logging.getLogger(__name__)
 
 
-def _get_client() -> OpenAI:
-    kwargs: dict = {"api_key": settings.OPENAI_API_KEY}
-    if settings.OPENAI_BASE_URL:
-        kwargs["base_url"] = settings.OPENAI_BASE_URL
+def _get_runtime_cfg() -> dict[str, str]:
+    """Read effective config from DB (falls back to env defaults if no DB override)."""
+    try:
+        from backend.database import SessionLocal
+        from backend.models import SystemConfig
+        from backend.api.settings_routes import DEFAULTS
+        db = SessionLocal()
+        try:
+            rows = db.query(SystemConfig).all()
+            cfg = dict(DEFAULTS)
+            for row in rows:
+                cfg[row.key] = row.value
+            return cfg
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("Cannot read runtime config from DB, using env defaults: %s", e)
+        return {
+            "llm_api_key":     _env.OPENAI_API_KEY,
+            "llm_model":       _env.OPENAI_MODEL,
+            "llm_base_url":    _env.OPENAI_BASE_URL,
+            "llm_temperature": "0.2",
+            "agent1_system":   AGENT1_SYSTEM,
+            "agent2_system":   AGENT2_SYSTEM,
+            "agent3_system":   AGENT3_SYSTEM,
+            "agent4_system":   AGENT4_SYSTEM,
+            "agent1_user_tmpl": AGENT1_USER_TMPL,
+            "agent2_user_tmpl": AGENT2_USER_TMPL,
+            "agent3_user_tmpl": AGENT3_USER_TMPL,
+            "agent4_user_tmpl": AGENT4_USER_TMPL,
+        }
+
+
+def _get_client(cfg: dict | None = None) -> OpenAI:
+    if cfg is None:
+        cfg = _get_runtime_cfg()
+    kwargs: dict = {"api_key": cfg["llm_api_key"]}
+    if cfg.get("llm_base_url"):
+        kwargs["base_url"] = cfg["llm_base_url"]
     return OpenAI(**kwargs)
 
 
-def _chat(client: OpenAI, messages: list[dict], temperature: float = 0.2) -> str:
+def _chat(client: OpenAI, messages: list[dict], temperature: float = 0.2, model: str = "") -> str:
+    if not model:
+        model = _get_runtime_cfg()["llm_model"]
     response = client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
+        model=model,
         messages=messages,
         temperature=temperature,
     )
@@ -91,9 +128,12 @@ Please analyze the code structure and describe:
 
 def agent_code_understanding(finding: dict, client: OpenAI | None = None) -> str:
     """Agent 1: Understand the code context."""
+    cfg = _get_runtime_cfg()
     if client is None:
-        client = _get_client()
-    prompt = AGENT1_USER_TMPL.format(
+        client = _get_client(cfg)
+    system = cfg["agent1_system"]
+    tmpl = cfg["agent1_user_tmpl"]
+    prompt = tmpl.format(
         tool=finding.get("tool", ""),
         rule_id=finding.get("rule_id", ""),
         file_path=finding.get("file_path", ""),
@@ -103,11 +143,11 @@ def agent_code_understanding(finding: dict, client: OpenAI | None = None) -> str
         code_snippet=finding.get("code_snippet", "(not available)"),
     )
     messages = [
-        {"role": "system", "content": AGENT1_SYSTEM},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ]
     try:
-        return _chat(client, messages)
+        return _chat(client, messages, float(cfg.get("llm_temperature", 0.2)), cfg["llm_model"])
     except Exception as e:
         logger.error("Agent1 error: %s", e)
         return f"Error in code understanding: {e}"
@@ -150,11 +190,13 @@ Provide a concise path feasibility assessment."""
 
 def agent_path_analysis(finding: dict, code_understanding: str, client: OpenAI | None = None) -> str:
     """Agent 2: Analyze execution path feasibility."""
+    cfg = _get_runtime_cfg()
     if client is None:
-        client = _get_client()
-
+        client = _get_client(cfg)
+    system = cfg["agent2_system"]
+    tmpl = cfg["agent2_user_tmpl"]
     path_str = "\n".join(finding.get("execution_path", [])) or "(no trace available)"
-    prompt = AGENT2_USER_TMPL.format(
+    prompt = tmpl.format(
         tool=finding.get("tool", ""),
         rule_id=finding.get("rule_id", ""),
         message=finding.get("message", ""),
@@ -163,11 +205,11 @@ def agent_path_analysis(finding: dict, code_understanding: str, client: OpenAI |
         code_snippet=finding.get("code_snippet", "(not available)"),
     )
     messages = [
-        {"role": "system", "content": AGENT2_SYSTEM},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ]
     try:
-        return _chat(client, messages)
+        return _chat(client, messages, float(cfg.get("llm_temperature", 0.2)), cfg["llm_model"])
     except Exception as e:
         logger.error("Agent2 error: %s", e)
         return f"Error in path analysis: {e}"
@@ -216,10 +258,12 @@ def agent_vulnerability_judgment(
     client: OpenAI | None = None,
 ) -> dict:
     """Agent 3: Judge whether finding is a real vulnerability."""
+    cfg = _get_runtime_cfg()
     if client is None:
-        client = _get_client()
-
-    prompt = AGENT3_USER_TMPL.format(
+        client = _get_client(cfg)
+    system = cfg["agent3_system"]
+    tmpl = cfg["agent3_user_tmpl"]
+    prompt = tmpl.format(
         tool=finding.get("tool", ""),
         rule_id=finding.get("rule_id", ""),
         severity=finding.get("sast_severity", "medium"),
@@ -230,11 +274,11 @@ def agent_vulnerability_judgment(
         path_analysis=path_analysis,
     )
     messages = [
-        {"role": "system", "content": AGENT3_SYSTEM},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ]
     try:
-        raw = _chat(client, messages, temperature=0.1)
+        raw = _chat(client, messages, 0.1, cfg["llm_model"])
         result = _extract_json(raw)
         return {
             "is_vulnerable": bool(result.get("is_vulnerable", True)),
@@ -294,10 +338,12 @@ def agent_fix_suggestion(
     client: OpenAI | None = None,
 ) -> dict:
     """Agent 4: Generate fix suggestions for confirmed vulnerabilities."""
+    cfg = _get_runtime_cfg()
     if client is None:
-        client = _get_client()
-
-    prompt = AGENT4_USER_TMPL.format(
+        client = _get_client(cfg)
+    system = cfg["agent4_system"]
+    tmpl = cfg["agent4_user_tmpl"]
+    prompt = tmpl.format(
         tool=finding.get("tool", ""),
         rule_id=finding.get("rule_id", ""),
         file_path=finding.get("file_path", ""),
@@ -309,12 +355,11 @@ def agent_fix_suggestion(
         code_snippet=finding.get("code_snippet", "(not available)"),
     )
     messages = [
-        {"role": "system", "content": AGENT4_SYSTEM},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ]
     try:
-        suggestion = _chat(client, messages)
-        # Extract patch block if present
+        suggestion = _chat(client, messages, float(cfg.get("llm_temperature", 0.2)), cfg["llm_model"])
         patch_match = re.search(r"```(?:c|cpp|diff)?\s*(.*?)\s*```", suggestion, re.DOTALL)
         patch = patch_match.group(1) if patch_match else ""
         return {
@@ -336,9 +381,10 @@ def agent_fix_suggestion(
 def run_analysis_pipeline(finding: dict) -> dict:
     """
     Run the full 4-agent analysis pipeline on a finding.
-    Returns an enriched finding dict with LLM analysis results.
+    Config (API key, model, prompts) is read fresh from DB on each call.
     """
-    client = _get_client()
+    cfg = _get_runtime_cfg()
+    client = _get_client(cfg)
     result = dict(finding)
 
     logger.info("Agent1: Code Understanding for %s:%s", finding.get("file_path"), finding.get("line_start"))

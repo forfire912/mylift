@@ -7,12 +7,6 @@ from typing import Any
 import datetime
 
 
-class ScanTaskCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    tool: str = Field(..., pattern="^(cppcheck|coverity|klocwork)$")
-    raw_input: str = Field(..., description="Raw SAST tool output (XML for cppcheck, JSON for others)")
-
-
 class ScanTaskResponse(BaseModel):
     id: int
     name: str
@@ -68,6 +62,12 @@ class StatsResponse(BaseModel):
     severity_distribution: dict[str, int]
     tool_distribution: dict[str, int]
     avg_risk_score: float
+
+
+class ScanTaskCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    tool: str = Field(..., description="cppcheck | coverity | klocwork")
+    raw_input: str = Field(..., min_length=1, description="Raw tool output text (XML or JSON)")
 
 
 class AnalyzeRequest(BaseModel):

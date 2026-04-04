@@ -58,10 +58,51 @@ export interface Stats {
   avg_risk_score: number
 }
 
+export interface AgentInfo {
+  label: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  output: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface TaskProgress {
+  task_id: number
+  status: 'running' | 'done' | 'error' | 'not_started' | 'pending'
+  finding_total: number
+  finding_current: number
+  current_agent: number
+  started_at: string | null
+  finished_at: string | null
+  agents: Record<string, AgentInfo>
+}
+
+export interface SystemSettings {
+  llm_api_key: string
+  llm_model: string
+  llm_base_url: string
+  llm_temperature: string
+  source_code_dir: string
+  agent1_system: string
+  agent2_system: string
+  agent3_system: string
+  agent4_system: string
+  agent1_user_tmpl: string
+  agent2_user_tmpl: string
+  agent3_user_tmpl: string
+  agent4_user_tmpl: string
+}
+
 export const apiService = {
-  // Tasks
-  createTask: (data: { name: string; tool: string; raw_input: string }) =>
-    axiosClient.post<ScanTask>('/tasks', data),
+  // Tasks - 读取文件内容后以 JSON body 提交
+  createTask: async (data: { name: string; tool: string; file: File }) => {
+    const raw_input = await data.file.text()
+    return axiosClient.post<ScanTask>('/tasks', {
+      name: data.name,
+      tool: data.tool,
+      raw_input,
+    })
+  },
   listTasks: () => axiosClient.get<ScanTask[]>('/tasks'),
   getTask: (id: number) => axiosClient.get<ScanTask>(`/tasks/${id}`),
   analyzeTask: (id: number, findingIds?: number[]) =>
@@ -86,81 +127,17 @@ export const apiService = {
   // Stats
   getStats: (taskId?: number) =>
     axiosClient.get<Stats>('/stats', { params: taskId ? { task_id: taskId } : {} }),
+
+  // System Settings
+  getSettings: () => axiosClient.get<SystemSettings>('/settings'),
+  updateSettings: (data: Partial<SystemSettings>) => axiosClient.put<SystemSettings>('/settings', data),
+  resetSettings: () => axiosClient.post<SystemSettings>('/settings/reset'),
+
+  // Analysis progress
+  getTaskProgress: (taskId: number) => axiosClient.get<TaskProgress>(`/tasks/${taskId}/progress`),
+
+  // Clear all
+  deleteAllTasks: () => axiosClient.delete('/tasks'),
 }
 
 export default apiService
-const BASE = '/api'
-
-export interface Report {
-  id: number
-  name: string
-  tool: string | null
-  format: string
-  created_at: string
-  vulnerability_count: number
-}
-
-export interface ReportDetail extends Report {
-  vulnerabilities: Vulnerability[]
-}
-
-export interface Vulnerability {
-  id: number
-  report_id: number
-  rule_id: string | null
-  severity: string | null
-  message: string | null
-  file_path: string | null
-  start_line: number | null
-  end_line: number | null
-  start_column: number | null
-  code_snippet: string | null
-  cwe: string | null
-  tags: string | null
-}
-
-export interface ReportStats {
-  total_reports: number
-  total_vulnerabilities: number
-  by_severity: Record<string, number>
-  by_tool: Record<string, number>
-}
-
-export interface UploadResult {
-  report_id: number
-  name: string
-  tool: string | null
-  format: string
-  vulnerability_count: number
-  message: string
-}
-
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(BASE + path, options)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(body.detail ?? `HTTP ${res.status}`)
-  }
-  if (res.status === 204) return undefined as T
-  return res.json()
-}
-
-export const api = {
-  stats: () => request<ReportStats>('/stats'),
-  listReports: (skip = 0, limit = 50) =>
-    request<Report[]>(`/reports?skip=${skip}&limit=${limit}`),
-  getReport: (id: number) => request<ReportDetail>(`/reports/${id}`),
-  deleteReport: (id: number) =>
-    request<void>(`/reports/${id}`, { method: 'DELETE' }),
-  listVulnerabilities: (reportId: number, severity?: string, ruleId?: string) => {
-    const params = new URLSearchParams()
-    if (severity) params.set('severity', severity)
-    if (ruleId) params.set('rule_id', ruleId)
-    return request<Vulnerability[]>(`/reports/${reportId}/vulnerabilities?${params}`)
-  },
-  upload: (file: File): Promise<UploadResult> => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return request<UploadResult>('/upload', { method: 'POST', body: fd })
-  },
-}
