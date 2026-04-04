@@ -144,13 +144,30 @@ def enrich_finding(
 
 
 def _resolve_path(file_path: str, base_dir: str | None) -> str | None:
-    """Try to resolve a file path, optionally relative to base_dir."""
-    if os.path.isabs(file_path) and os.path.exists(file_path):
-        return file_path
+    """Try to resolve a file path, optionally relative to base_dir.
+
+    When a base_dir is provided, the resolved path is validated to be
+    inside base_dir to prevent directory traversal attacks.
+    """
+    if not file_path:
+        return None
+
     if base_dir:
-        candidate = os.path.join(base_dir, file_path)
-        if os.path.exists(candidate):
-            return candidate
-    if os.path.exists(file_path):
-        return file_path
+        base_real = os.path.realpath(base_dir)
+        candidate = os.path.realpath(os.path.join(base_dir, file_path))
+        # Guard against directory traversal: candidate must be inside base_dir
+        if candidate.startswith(base_real + os.sep) or candidate == base_real:
+            if os.path.exists(candidate):
+                return candidate
+
+    if os.path.isabs(file_path):
+        resolved = os.path.realpath(file_path)
+        if os.path.exists(resolved):
+            return resolved
+        return None
+
+    # Relative path without base_dir: resolve against CWD
+    resolved = os.path.realpath(file_path)
+    if os.path.exists(resolved):
+        return resolved
     return None

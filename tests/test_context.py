@@ -72,6 +72,33 @@ class TestExtractFunctionName:
         assert fn == "my_func"
 
 
+class TestPathTraversalSecurity:
+    def test_base_dir_traversal_blocked(self, tmp_path):
+        # Create a sensitive file outside base_dir
+        sensitive = tmp_path / "sensitive.txt"
+        sensitive.write_text("secret")
+
+        # Create sub-directory as base_dir
+        sub_dir = tmp_path / "sub"
+        sub_dir.mkdir()
+        sub_file = sub_dir / "code.c"
+        sub_file.write_text("int main() { return 0; }")
+
+        # Attempt path traversal: ../sensitive.txt
+        snippet = extract_code_snippet("../sensitive.txt", 1, base_dir=str(sub_dir))
+        # Should NOT return content of sensitive.txt - path traversal blocked
+        assert "secret" not in snippet
+
+    def test_base_dir_valid_file_accessible(self, tmp_path):
+        sub_dir = tmp_path / "src"
+        sub_dir.mkdir()
+        code_file = sub_dir / "main.c"
+        code_file.write_text("int main() {\n    return 0;\n}\n")
+
+        snippet = extract_code_snippet("main.c", 1, base_dir=str(sub_dir))
+        assert "main" in snippet
+
+
 class TestBuildExecutionPath:
     def test_empty_trace(self):
         path = build_execution_path([])
