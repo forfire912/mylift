@@ -1,5 +1,10 @@
 {
   "name": "mylift-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -12,6 +17,11 @@
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-router-dom": "^6.23.0",
+    "axios": "^1.6.8",
+    "recharts": "^2.12.5",
+    "react-syntax-highlighter": "^15.5.0",
+    "@types/react-syntax-highlighter": "^15.5.13"
     "react-router-dom": "^6.22.3"
   },
   "devDependencies": {
