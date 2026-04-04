@@ -9,3 +9,4 @@ __all__ = [
     "ScanTaskCreate", "ScanTaskResponse", "FindingResponse",
     "FindingListResponse", "StatsResponse", "AnalyzeRequest",
 ]
+# api package
