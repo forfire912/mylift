@@ -34,7 +34,6 @@ def test_enrich_start_of_file():
 
 
 def test_enrich_nonexistent_file():
-    import tempfile
     base_dir = tempfile.mkdtemp()
     result = enrich("does_not_exist.py", 5, base_dir)
     assert result is None
