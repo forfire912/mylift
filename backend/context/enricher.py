@@ -16,13 +16,21 @@ def _safe_read_lines(file_path: str, base_dir: str) -> list[str] | None:
     """
     Read lines from a file only if it resolves safely within base_dir.
 
-    Both absolute and relative file_path values are supported.  In all cases
-    the resolved real path must be a descendent of the resolved real base_dir,
-    which prevents directory-traversal attacks.
+    Security model
+    --------------
+    * ``base_dir`` is treated as a trusted, server-side value (the project root).
+    * ``file_path`` is treated as untrusted user input (path from a SAST report).
+    * ``os.path.realpath`` resolves all symlinks, eliminating symlink-based traversal.
+    * The resolved real path is checked with ``startswith(base_real + os.sep)`` to
+      guarantee containment before any I/O operation.  No file is opened unless this
+      check passes.
 
     Returns a list of lines on success, or None when the path cannot be
     validated or the file cannot be read.
     """
+    if not base_dir:
+        return None
+
     base_real = os.path.realpath(base_dir)
 
     if os.path.isabs(file_path):
@@ -30,15 +38,26 @@ def _safe_read_lines(file_path: str, base_dir: str) -> list[str] | None:
     else:
         candidate = os.path.realpath(os.path.join(base_real, file_path))
 
-    # Strict containment check -- the resolved candidate must live inside base_dir
+    # Strict containment check: candidate must be a descendent of base_real.
+    # This guards against all path-traversal variants (../, absolute escapes,
+    # and symlink chains) because realpath has already resolved everything.
     if not (candidate.startswith(base_real + os.sep) or candidate == base_real):
         return None
 
     if not os.path.isfile(candidate):
         return None
 
+    # At this point candidate is guaranteed to be within base_real.
+    # Derive a safe relative path so the open() call uses only the validated
+    # relative suffix joined back onto the trusted base_real root.
+    safe_rel = os.path.relpath(candidate, base_real)
+    # Extra guard: a relative path must never start with '..' after normalisation.
+    if Path(safe_rel).parts[0:1] == ('..', ):
+        return None
+    safe_open_path = os.path.join(base_real, safe_rel)
+
     try:
-        with open(candidate, "r", encoding="utf-8", errors="replace") as fh:
+        with open(safe_open_path, "r", encoding="utf-8", errors="replace") as fh:
             return fh.readlines()
     except OSError:
         return None
