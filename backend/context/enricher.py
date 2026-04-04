@@ -58,28 +58,6 @@ def _safe_read_lines(file_path: str, base_dir: str) -> list[str] | None:
 
     try:
         with open(safe_open_path, "r", encoding="utf-8", errors="replace") as fh:
-"""Code context enricher.
-
-Given a file path and a line number, reads surrounding source lines to produce
-a human-readable code snippet. The base_dir argument prevents path traversal.
-"""
-
-from __future__ import annotations
-
-import os
-from typing import List, Optional
-
-
-def _safe_read_lines(file_path: str, base_dir: str) -> Optional[List[str]]:
-    """Read a file only if it is inside base_dir (prevents path traversal)."""
-    abs_base = os.path.realpath(base_dir)
-    abs_file = os.path.realpath(os.path.join(base_dir, file_path))
-    if not abs_file.startswith(abs_base + os.sep) and abs_file != abs_base:
-        return None
-    if not os.path.isfile(abs_file):
-        return None
-    try:
-        with open(abs_file, encoding="utf-8", errors="replace") as fh:
             return fh.readlines()
     except OSError:
         return None
@@ -214,13 +192,15 @@ def enrich_finding(
 
     enriched["execution_path"] = build_execution_path(trace)
     return enriched
+
+
 def enrich(
     file_path: str,
     start_line: int,
     base_dir: str,
     context_lines: int = 3,
-    end_line: Optional[int] = None,
-) -> Optional[str]:
+    end_line: int | None = None,
+) -> str | None:
     """Return a snippet of source code around ``start_line``.
 
     Args:

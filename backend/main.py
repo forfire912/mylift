@@ -11,7 +11,7 @@ import os
 from backend.config import get_settings
 from backend.database import engine
 from backend.models import Base
-from backend.api import router
+from backend.api import router, router_v2
 
 settings = get_settings()
 
@@ -30,37 +30,6 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
-"""MyLift – SAST Result Analysis Platform.
-
-Start with:
-    uvicorn backend.main:app --reload
-"""
-
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-from backend.database import create_tables
-from backend.api.routes import router
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    create_tables()
-    yield
-
-
-app = FastAPI(
-    title="MyLift",
-    description="SAST (Static Application Security Testing) result analysis platform.",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,6 +37,7 @@ app.add_middleware(
 
 # API routes
 app.include_router(router, prefix="/api/v1")
+app.include_router(router_v2)
 
 # Serve frontend static files if built
 _frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
@@ -78,7 +48,6 @@ if os.path.isdir(_frontend_dist):
     async def serve_frontend(full_path: str):
         index = os.path.join(_frontend_dist, "index.html")
         return FileResponse(index)
-app.include_router(router)
 
 
 @app.get("/health")
