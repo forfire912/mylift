@@ -1,14 +1,3 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
-from backend.config import get_settings
-
-settings = get_settings()
-
-engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
-)
-
 """Database setup and models using SQLAlchemy with SQLite."""
 
 import os
@@ -38,8 +27,6 @@ class Base(DeclarativeBase):
     pass
 
 
-def get_db():
-    db = SessionLocal()
 class Report(Base):
     __tablename__ = "reports"
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, Stats } from '../services/api'
+import { api, ReportStats } from '../services/api'
 
 function SeverityBar({ counts }: { counts: Record<string, number> }) {
   const order = ['critical', 'high', 'medium', 'low', 'info']
@@ -37,7 +37,7 @@ function SeverityBar({ counts }: { counts: Record<string, number> }) {
 }
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<Stats | null>(null)
+  const [stats, setStats] = useState<ReportStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 

@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const api = axios.create({
+const axiosClient = axios.create({
   baseURL: '/api/v1',
   headers: { 'Content-Type': 'application/json' },
 })
@@ -61,11 +61,11 @@ export interface Stats {
 export const apiService = {
   // Tasks
   createTask: (data: { name: string; tool: string; raw_input: string }) =>
-    api.post<ScanTask>('/tasks', data),
-  listTasks: () => api.get<ScanTask[]>('/tasks'),
-  getTask: (id: number) => api.get<ScanTask>(`/tasks/${id}`),
+    axiosClient.post<ScanTask>('/tasks', data),
+  listTasks: () => axiosClient.get<ScanTask[]>('/tasks'),
+  getTask: (id: number) => axiosClient.get<ScanTask>(`/tasks/${id}`),
   analyzeTask: (id: number, findingIds?: number[]) =>
-    api.post(`/tasks/${id}/analyze`, { finding_ids: findingIds || [] }),
+    axiosClient.post(`/tasks/${id}/analyze`, { finding_ids: findingIds || [] }),
 
   // Findings
   listFindings: (params: {
@@ -77,15 +77,15 @@ export const apiService = {
     min_risk_score?: number
     page?: number
     page_size?: number
-  }) => api.get<FindingListResponse>('/findings', { params }),
-  getFinding: (id: number) => api.get<Finding>(`/findings/${id}`),
+  }) => axiosClient.get<FindingListResponse>('/findings', { params }),
+  getFinding: (id: number) => axiosClient.get<Finding>(`/findings/${id}`),
   markFalsePositive: (id: number, isFP: boolean) =>
-    api.patch(`/findings/${id}/false-positive`, null, { params: { is_false_positive: isFP } }),
-  analyzeFinding: (id: number) => api.post(`/findings/${id}/analyze`),
+    axiosClient.patch(`/findings/${id}/false-positive`, null, { params: { is_false_positive: isFP } }),
+  analyzeFinding: (id: number) => axiosClient.post(`/findings/${id}/analyze`),
 
   // Stats
   getStats: (taskId?: number) =>
-    api.get<Stats>('/stats', { params: taskId ? { task_id: taskId } : {} }),
+    axiosClient.get<Stats>('/stats', { params: taskId ? { task_id: taskId } : {} }),
 }
 
 export default apiService
@@ -119,7 +119,7 @@ export interface Vulnerability {
   tags: string | null
 }
 
-export interface Stats {
+export interface ReportStats {
   total_reports: number
   total_vulnerabilities: number
   by_severity: Record<string, number>
@@ -146,7 +146,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  stats: () => request<Stats>('/stats'),
+  stats: () => request<ReportStats>('/stats'),
   listReports: (skip = 0, limit = 50) =>
     request<Report[]>(`/reports?skip=${skip}&limit=${limit}`),
   getReport: (id: number) => request<ReportDetail>(`/reports/${id}`),
