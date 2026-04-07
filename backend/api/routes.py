@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import datetime
-import threading
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -18,9 +17,17 @@ from backend.adapters import get_adapter
 from backend.sarif import findings_to_sarif, sarif_to_findings
 from backend.context import enrich_finding
 from backend.scoring import compute_risk_score
+from backend.progress import (
+    clear_task_progress,
+    finish_task_progress,
+    get_task_progress_snapshot,
+    init_task_progress,
+    set_agent_status,
+)
 from backend.api.schemas import (
     ScanTaskCreate, ScanTaskResponse, FindingResponse,
     FindingListResponse, StatsResponse, AnalyzeRequest,
+    BatchFalsePositiveUpdateRequest,
 )
 from backend.api.settings_routes import _get_all as _get_runtime_settings
 
@@ -28,76 +35,6 @@ settings = get_settings()
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# ─────────────────────────────────────────────────────────────
-# In-memory task progress store
-# ─────────────────────────────────────────────────────────────
-_task_progress: dict[int, dict] = {}
-_progress_lock = threading.Lock()
-
-_AGENT_META = {
-    1: "代码理解",
-    2: "路径分析",
-    3: "漏洞判定",
-    4: "修复建议",
-}
-
-
-def _init_progress(task_id: int, total: int) -> None:
-    with _progress_lock:
-        _task_progress[task_id] = {
-            "task_id": task_id,
-            "status": "running",
-            "finding_total": total,
-            "finding_current": 0,
-            "current_agent": 0,
-            "started_at": datetime.datetime.utcnow().isoformat(),
-            "finished_at": None,
-            "agents": {
-                str(i): {
-                    "label": label,
-                    "status": "pending",  # pending|running|done|error
-                    "output": "",
-                    "started_at": None,
-                    "finished_at": None,
-                }
-                for i, label in _AGENT_META.items()
-            },
-        }
-
-
-def _set_agent_status(
-    task_id: int,
-    agent_num: int,
-    status: str,
-    output: str = "",
-    finding_current: int | None = None,
-) -> None:
-    with _progress_lock:
-        p = _task_progress.get(task_id)
-        if p is None:
-            return
-        a = p["agents"][str(agent_num)]
-        a["status"] = status
-        if output:
-            a["output"] = output[:2000]  # cap to 2 KB
-        now = datetime.datetime.utcnow().isoformat()
-        if status == "running":
-            a["started_at"] = now
-            p["current_agent"] = agent_num
-        if status in ("done", "error"):
-            a["finished_at"] = now
-        if finding_current is not None:
-            p["finding_current"] = finding_current
-
-
-def _finish_progress(task_id: int, status: str = "done") -> None:
-    with _progress_lock:
-        p = _task_progress.get(task_id)
-        if p:
-            p["status"] = status
-            p["finished_at"] = datetime.datetime.utcnow().isoformat()
-            p["current_agent"] = 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -222,23 +159,23 @@ def trigger_analysis(
     task = db.query(ScanTask).filter(ScanTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    task.status = "analyzing"
+    db.commit()
+
+    selected_ids = payload.finding_ids or None
 
     try:
-        from backend.tasks import analyze_finding_task, analyze_task_task
-        if payload.finding_ids:
-            for fid in payload.finding_ids:
-                analyze_finding_task.delay(fid)
-            return {"message": f"Queued {len(payload.finding_ids)} findings for analysis"}
-        else:
-            analyze_task_task.delay(task_id)
-            return {"message": f"Queued all findings in task {task_id} for analysis"}
+        from backend.tasks import analyze_task_task
+        analyze_task_task.delay(task_id, selected_ids)
+        count_msg = len(selected_ids) if selected_ids else "all"
+        return {"message": f"Queued {count_msg} findings for analysis", "task_id": task_id}
     except Exception as e:
         # Celery not available, run synchronously in background
-        background_tasks.add_task(_analyze_task_sync, task_id)
+        background_tasks.add_task(_analyze_task_sync, task_id, selected_ids)
         return {"message": "Analysis started (sync fallback - Celery unavailable)"}
 
 
-def _analyze_task_sync(task_id: int) -> None:
+def _analyze_task_sync(task_id: int, finding_ids: list[int] | None = None) -> None:
     """Step-by-step analysis with per-agent progress tracking."""
     from backend.agents import (
         agent_code_understanding, agent_path_analysis,
@@ -249,37 +186,49 @@ def _analyze_task_sync(task_id: int) -> None:
 
     sync_db = SessionLocal()
     try:
-        findings = sync_db.query(Finding).filter(Finding.task_id == task_id).all()
-        _init_progress(task_id, len(findings))
+        task = sync_db.query(ScanTask).filter(ScanTask.id == task_id).first()
+        if task is None:
+            return
+        task.status = "analyzing"
+        sync_db.commit()
+
+        findings_query = sync_db.query(Finding).filter(Finding.task_id == task_id)
+        if finding_ids:
+            findings_query = findings_query.filter(Finding.id.in_(finding_ids))
+        findings = findings_query.order_by(Finding.id.asc()).all()
+        init_task_progress(task_id, len(findings))
         cfg = _get_runtime_cfg()
         client = _get_client(cfg)
+        had_errors = False
 
         for idx, finding in enumerate(findings):
             finding_idx = idx + 1
             try:
+                for agent_num in range(1, 5):
+                    set_agent_status(task_id, agent_num, "pending", output="")
                 fd = _finding_to_dict(finding)
 
                 # Agent 1
-                _set_agent_status(task_id, 1, "running", finding_current=finding_idx)
+                set_agent_status(task_id, 1, "running", finding_current=finding_idx)
                 cu = agent_code_understanding(fd, client)
-                _set_agent_status(task_id, 1, "done", output=cu)
+                set_agent_status(task_id, 1, "done", output=cu)
 
                 # Agent 2
-                _set_agent_status(task_id, 2, "running")
+                set_agent_status(task_id, 2, "running")
                 pa = agent_path_analysis(fd, cu, client)
-                _set_agent_status(task_id, 2, "done", output=pa)
+                set_agent_status(task_id, 2, "done", output=pa)
 
                 # Agent 3
-                _set_agent_status(task_id, 3, "running")
+                set_agent_status(task_id, 3, "running")
                 judgment = agent_vulnerability_judgment(fd, cu, pa, client)
-                _set_agent_status(task_id, 3, "done",
+                set_agent_status(task_id, 3, "done",
                     output=f"is_vulnerable={judgment['is_vulnerable']}  "
                            f"confidence={judgment['confidence']:.2f}\n{judgment['reason']}")
 
                 # Agent 4
-                _set_agent_status(task_id, 4, "running")
+                set_agent_status(task_id, 4, "running")
                 fix = agent_fix_suggestion(fd, judgment, client)
-                _set_agent_status(task_id, 4, "done", output=fix["fix_suggestion"])
+                set_agent_status(task_id, 4, "done", output=fix["fix_suggestion"])
 
                 result = {
                     "llm_code_understanding": cu,
@@ -293,47 +242,27 @@ def _analyze_task_sync(task_id: int) -> None:
                 _update_finding_from_result(finding, result, sync_db)
                 sync_db.commit()
 
-                # Reset agent statuses for next finding
-                for i in range(1, 5):
-                    _set_agent_status(task_id, i, "pending")
-
             except Exception as e:
                 logger.error("Analysis failed for finding %s: %s", finding.id, e)
-                _set_agent_status(task_id, 1, "error", output=str(e))
+                had_errors = True
+                set_agent_status(task_id, 1, "error", output=str(e), finding_current=finding_idx)
 
-        _finish_progress(task_id, "done")
+        finish_task_progress(task_id, "error" if had_errors else "done")
 
-        # Update task status
-        task = sync_db.query(ScanTask).filter(ScanTask.id == task_id).first()
-        if task:
-            task.status = "analyzed"
-            sync_db.commit()
+        task.status = "error" if had_errors else "analyzed"
+        sync_db.commit()
 
     except Exception as e:
         logger.error("Task analysis failed for task %s: %s", task_id, e)
-        _finish_progress(task_id, "error")
+        finish_task_progress(task_id, "error")
     finally:
         sync_db.close()
 
 
 @router.get("/tasks/{task_id}/progress")
 def get_task_progress(task_id: int):
-    """Return in-memory analysis progress for a task."""
-    with _progress_lock:
-        p = _task_progress.get(task_id)
-    if p is None:
-        return {
-            "task_id": task_id,
-            "status": "not_started",
-            "finding_total": 0,
-            "finding_current": 0,
-            "current_agent": 0,
-            "started_at": None,
-            "finished_at": None,
-            "agents": {},
-        }
-    import copy
-    return copy.deepcopy(p)
+    """Return analysis progress for a task."""
+    return get_task_progress_snapshot(task_id)
 
 
 @router.delete("/tasks", status_code=204)
@@ -342,9 +271,44 @@ def delete_all_tasks(db: Session = Depends(get_db)):
     db.query(Finding).delete()
     db.query(ScanTask).delete()
     db.commit()
-    # Clear progress store
-    with _progress_lock:
-        _task_progress.clear()
+    clear_task_progress()
+
+
+@router.post("/findings/analyze")
+def analyze_findings_batch(
+    payload: AnalyzeRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    if not payload.finding_ids:
+        raise HTTPException(status_code=422, detail="finding_ids 不能为空")
+
+    findings = db.query(Finding).filter(Finding.id.in_(payload.finding_ids)).all()
+    if not findings:
+        raise HTTPException(status_code=404, detail="Findings not found")
+
+    grouped: dict[int, list[int]] = {}
+    for finding in findings:
+        grouped.setdefault(finding.task_id, []).append(finding.id)
+
+    for task_id in grouped:
+        task = db.query(ScanTask).filter(ScanTask.id == task_id).first()
+        if task:
+            task.status = "analyzing"
+    db.commit()
+
+    try:
+        from backend.tasks import analyze_task_task
+        for task_id, finding_ids in grouped.items():
+            analyze_task_task.delay(task_id, finding_ids)
+    except Exception:
+        for task_id, finding_ids in grouped.items():
+            background_tasks.add_task(_analyze_task_sync, task_id, finding_ids)
+
+    return {
+        "message": f"Queued {len(payload.finding_ids)} findings across {len(grouped)} tasks",
+        "task_ids": list(grouped.keys()),
+    }
 
 
 
@@ -411,8 +375,50 @@ def mark_false_positive(
     if not finding:
         raise HTTPException(status_code=404, detail="Finding not found")
     finding.is_false_positive = is_false_positive
+    score_result = compute_risk_score(
+        sast_severity=finding.sast_severity.value if finding.sast_severity else "medium",
+        llm_confidence=finding.llm_confidence,
+        is_vulnerable=finding.is_vulnerable,
+        is_false_positive=finding.is_false_positive,
+        code_snippet=finding.code_snippet,
+        execution_path=finding.execution_path,
+    )
+    finding.risk_score = score_result["risk_score"]
+    finding.final_severity = score_result["final_severity"]
     db.commit()
     return {"id": finding_id, "is_false_positive": is_false_positive}
+
+
+@router.patch("/findings/false-positive")
+def mark_false_positive_batch(
+    payload: BatchFalsePositiveUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    findings = db.query(Finding).filter(Finding.id.in_(payload.finding_ids)).all()
+    if not findings:
+        raise HTTPException(status_code=404, detail="Findings not found")
+
+    updated_ids: list[int] = []
+    for finding in findings:
+        finding.is_false_positive = payload.is_false_positive
+        score_result = compute_risk_score(
+            sast_severity=finding.sast_severity.value if finding.sast_severity else "medium",
+            llm_confidence=finding.llm_confidence,
+            is_vulnerable=finding.is_vulnerable,
+            is_false_positive=finding.is_false_positive,
+            code_snippet=finding.code_snippet,
+            execution_path=finding.execution_path,
+        )
+        finding.risk_score = score_result["risk_score"]
+        finding.final_severity = score_result["final_severity"]
+        updated_ids.append(finding.id)
+
+    db.commit()
+    return {
+        "updated_count": len(updated_ids),
+        "updated_ids": updated_ids,
+        "is_false_positive": payload.is_false_positive,
+    }
 
 
 @router.post("/findings/{finding_id}/analyze")
@@ -425,29 +431,27 @@ def analyze_finding(
     finding = db.query(Finding).filter(Finding.id == finding_id).first()
     if not finding:
         raise HTTPException(status_code=404, detail="Finding not found")
+    task = db.query(ScanTask).filter(ScanTask.id == finding.task_id).first()
+    if task:
+        task.status = "analyzing"
+        db.commit()
 
     try:
-        from backend.tasks import analyze_finding_task
-        analyze_finding_task.delay(finding_id)
+        from backend.tasks import analyze_task_task
+        analyze_task_task.delay(finding.task_id, [finding_id])
         return {"message": f"Finding {finding_id} queued for analysis"}
     except Exception:
-        background_tasks.add_task(_analyze_finding_sync, finding_id)
+        background_tasks.add_task(_analyze_task_sync, finding.task_id, [finding_id])
         return {"message": "Analysis started (sync fallback)"}
 
 
 def _analyze_finding_sync(finding_id: int):
-    from backend.agents import run_analysis_pipeline
-    from backend.database import SessionLocal
-
     db = SessionLocal()
     try:
         finding = db.query(Finding).filter(Finding.id == finding_id).first()
         if not finding:
             return
-        finding_dict = _finding_to_dict(finding)
-        result = run_analysis_pipeline(finding_dict)
-        _update_finding_from_result(finding, result, db)
-        db.commit()
+        _analyze_task_sync(finding.task_id, [finding_id])
     except Exception as e:
         logger.error("Sync analysis failed for finding %s: %s", finding_id, e)
     finally:
@@ -543,6 +547,7 @@ def _update_finding_from_result(finding: Finding, result: dict, db: Session):
         sast_severity=finding.sast_severity.value if finding.sast_severity else "medium",
         llm_confidence=finding.llm_confidence,
         is_vulnerable=finding.is_vulnerable,
+        is_false_positive=finding.is_false_positive,
         code_snippet=finding.code_snippet,
         execution_path=finding.execution_path,
     )

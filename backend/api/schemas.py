@@ -72,3 +72,8 @@ class ScanTaskCreate(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     finding_ids: list[int] = Field(default_factory=list, description="IDs to analyze; empty = all in task")
+
+
+class BatchFalsePositiveUpdateRequest(BaseModel):
+    finding_ids: list[int] = Field(default_factory=list, min_length=1, description="IDs to update")
+    is_false_positive: bool = Field(..., description="Whether to mark findings as false positives")

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, ReportStats } from '../services/api'
+import apiService, { Stats } from '../services/api'
 
 function SeverityBar({ counts }: { counts: Record<string, number> }) {
   const order = ['critical', 'high', 'medium', 'low', 'info']
@@ -37,14 +37,14 @@ function SeverityBar({ counts }: { counts: Record<string, number> }) {
 }
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<ReportStats | null>(null)
+  const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    api.stats()
-      .then(setStats)
-      .catch(e => setError(e.message))
+    apiService.getStats()
+      .then(response => setStats(response.data))
+      .catch((error: Error) => setError(error.message))
       .finally(() => setLoading(false))
   }, [])
 
@@ -58,14 +58,14 @@ export default function Dashboard() {
 
       <div className="stats-grid" style={{ marginBottom: '1.5rem' }}>
         <div className="stat-card">
-          <div className="stat-number" style={{ color: '#1a1a2e' }}>{stats.total_reports}</div>
-          <div className="stat-label">扫描报告</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-number" style={{ color: '#d32f2f' }}>{stats.total_vulnerabilities}</div>
+          <div className="stat-number" style={{ color: '#1a1a2e' }}>{stats.total_findings}</div>
           <div className="stat-label">漏洞总数</div>
         </div>
-        {Object.entries(stats.by_severity).sort().map(([sev, n]) => (
+        <div className="stat-card">
+          <div className="stat-number" style={{ color: '#d32f2f' }}>{stats.vulnerable_findings}</div>
+          <div className="stat-label">确认漏洞</div>
+        </div>
+        {Object.entries(stats.severity_distribution).sort().map(([sev, n]) => (
           <div key={sev} className="stat-card">
             <div className={`stat-number sev-${sev}`}>{n}</div>
             <div className="stat-label">{sev}</div>
@@ -76,18 +76,18 @@ export default function Dashboard() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
         <div className="card">
           <div className="card-title">按严重程度分布</div>
-          <SeverityBar counts={stats.by_severity} />
+          <SeverityBar counts={stats.severity_distribution} />
         </div>
 
         <div className="card">
           <div className="card-title">按工具分布</div>
-          {Object.keys(stats.by_tool).length === 0
+          {Object.keys(stats.tool_distribution).length === 0
             ? <div style={{ color: '#999', fontSize: '.9rem' }}>暂无数据</div>
             : (
               <table>
-                <thead><tr><th>工具</th><th>报告数</th></tr></thead>
+                <thead><tr><th>工具</th><th>问题数</th></tr></thead>
                 <tbody>
-                  {Object.entries(stats.by_tool).map(([tool, n]) => (
+                  {Object.entries(stats.tool_distribution).map(([tool, n]) => (
                     <tr key={tool}><td>{tool}</td><td>{n}</td></tr>
                   ))}
                 </tbody>
@@ -96,11 +96,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {stats.total_reports === 0 && (
+      {stats.total_findings === 0 && (
         <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
           <div style={{ fontSize: '2.5rem', marginBottom: '.5rem' }}>📂</div>
-          <div style={{ color: '#666', marginBottom: '1rem' }}>还没有扫描报告，上传第一份报告开始分析。</div>
-          <Link to="/upload"><button className="btn btn-primary">立即上传</button></Link>
+          <div style={{ color: '#666', marginBottom: '1rem' }}>还没有扫描任务，先上传一份扫描结果。</div>
+          <Link to="/"><button className="btn btn-primary">前往任务页</button></Link>
         </div>
       )}
     </div>

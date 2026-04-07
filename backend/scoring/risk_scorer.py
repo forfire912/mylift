@@ -35,6 +35,7 @@ def compute_risk_score(
     sast_severity: str,
     llm_confidence: float | None,
     is_vulnerable: bool | None,
+    is_false_positive: bool,
     code_snippet: str | None,
     execution_path: list | None,
 ) -> dict:
@@ -51,6 +52,19 @@ def compute_risk_score(
     # 1. Base score from SAST severity (0-40)
     severity_score = SEVERITY_BASE_SCORE.get(sast_severity.lower(), 20)
 
+    if is_false_positive:
+        return {
+            "risk_score": 0.0,
+            "final_severity": "info",
+            "breakdown": {
+                "severity_score": severity_score,
+                "llm_score": 0.0,
+                "exploitability_score": 0,
+                "context_score": 0,
+                "note": "manually_marked_false_positive",
+            },
+        }
+
     # 2. LLM confidence adjustment (0-35)
     # README 公式：LLM_Confidence × 35（仅对确认漏洞）
     # 对误报：置信度越高说明越确定是误报，直接返回保底低分
@@ -59,8 +73,7 @@ def compute_risk_score(
         if is_vulnerable:
             llm_score = llm_confidence * 35
         else:
-            # 误报：评分不参与累加，直接用 max(0, severity*0.3) 作为最终分
-            fp_score = round(max(0.0, severity_score * 0.3), 2)
+            fp_score = 0.0
             return {
                 "risk_score": fp_score,
                 "final_severity": _score_to_severity(fp_score),

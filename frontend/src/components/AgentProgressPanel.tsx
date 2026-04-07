@@ -81,7 +81,7 @@ function AgentCard({ num, info }: { num: string; info: AgentInfo }) {
 }
 
 export default function AgentProgressPanel() {
-  const { activeTaskId, openPanel } = useProgress()
+  const { activeTaskId, refreshToken, openPanel } = useProgress()
   const [progress, setProgress] = useState<TaskProgress | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -90,10 +90,10 @@ export default function AgentProgressPanel() {
     if (!activeTaskId) {
       apiService.listTasks().then(r => {
         const tasks = r.data
-        if (tasks.length > 0) openPanel(tasks[tasks.length - 1].id)
+        if (tasks.length > 0) openPanel(tasks[0].id)
       }).catch(() => {})
     }
-  }, [])
+  }, [activeTaskId, openPanel])
 
   const fetchProgress = async (taskId: number) => {
     try {
@@ -113,7 +113,7 @@ export default function AgentProgressPanel() {
       timerRef.current = setInterval(() => fetchProgress(activeTaskId), POLL_INTERVAL)
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [activeTaskId])
+  }, [activeTaskId, refreshToken])
 
   const overallStatus = progress?.status ?? 'not_started'
   const pct = progress && progress.finding_total > 0
@@ -175,7 +175,12 @@ export default function AgentProgressPanel() {
           {!progress || !progress.agents || Object.keys(progress.agents).length === 0 ? (
             <div style={{ textAlign: 'center', color: '#bbb', paddingTop: 60 }}>
               <div style={{ fontSize: 32, marginBottom: 10 }}>⟳</div>
-              <div>等待分析启动...</div>
+              <div>{progress?.status === 'running' ? '分析进行中，等待 Agent 细节...' : '等待分析启动...'}</div>
+              {progress && progress.finding_total > 0 && (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+                  已完成 {progress.finding_current} / {progress.finding_total}
+                </div>
+              )}
             </div>
           ) : (
             Object.entries(progress.agents).map(([num, info]) => (

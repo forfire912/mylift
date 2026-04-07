@@ -107,6 +107,8 @@ export const apiService = {
   getTask: (id: number) => axiosClient.get<ScanTask>(`/tasks/${id}`),
   analyzeTask: (id: number, findingIds?: number[]) =>
     axiosClient.post(`/tasks/${id}/analyze`, { finding_ids: findingIds || [] }),
+  analyzeFindings: (findingIds: number[]) =>
+    axiosClient.post('/findings/analyze', { finding_ids: findingIds }),
 
   // Findings
   listFindings: (params: {
@@ -122,6 +124,8 @@ export const apiService = {
   getFinding: (id: number) => axiosClient.get<Finding>(`/findings/${id}`),
   markFalsePositive: (id: number, isFP: boolean) =>
     axiosClient.patch(`/findings/${id}/false-positive`, null, { params: { is_false_positive: isFP } }),
+  markFalsePositiveBatch: (findingIds: number[], isFalsePositive: boolean) =>
+    axiosClient.patch('/findings/false-positive', { finding_ids: findingIds, is_false_positive: isFalsePositive }),
   analyzeFinding: (id: number) => axiosClient.post(`/findings/${id}/analyze`),
 
   // Stats

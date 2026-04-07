@@ -147,10 +147,40 @@ class TestFindings:
         resp = client.patch(f"/api/v1/findings/{finding_id}/false-positive?is_false_positive=true")
         assert resp.status_code == 200
         assert resp.json()["is_false_positive"] is True
+        detail = client.get(f"/api/v1/findings/{finding_id}")
+        assert detail.status_code == 200
+        assert detail.json()["final_severity"] == "info"
+        assert detail.json()["risk_score"] == 0.0
 
         # Revert
         resp2 = client.patch(f"/api/v1/findings/{finding_id}/false-positive?is_false_positive=false")
         assert resp2.json()["is_false_positive"] is False
+
+    def test_batch_analyze_requires_ids(self, client):
+        resp = client.post("/api/v1/findings/analyze", json={"finding_ids": []})
+        assert resp.status_code == 422
+
+    def test_batch_mark_false_positive(self, client):
+        list_resp = client.get(f"/api/v1/findings?task_id={self.task_id}")
+        finding_ids = [item["id"] for item in list_resp.json()["items"]]
+
+        resp = client.patch("/api/v1/findings/false-positive", json={
+            "finding_ids": finding_ids,
+            "is_false_positive": True,
+        })
+        assert resp.status_code == 200
+        assert resp.json()["updated_count"] == len(finding_ids)
+
+        verify = client.get(f"/api/v1/findings?task_id={self.task_id}")
+        assert all(item["is_false_positive"] is True for item in verify.json()["items"])
+
+        revert = client.patch("/api/v1/findings/false-positive", json={
+            "finding_ids": finding_ids,
+            "is_false_positive": False,
+        })
+        assert revert.status_code == 200
+        verify_revert = client.get(f"/api/v1/findings?task_id={self.task_id}")
+        assert all(item["is_false_positive"] is False for item in verify_revert.json()["items"])
 
     def test_filter_by_tool(self, client):
         resp = client.get(f"/api/v1/findings?task_id={self.task_id}&tool=cppcheck")

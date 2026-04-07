@@ -81,3 +81,16 @@ class SystemConfig(Base):
     key = Column(String(128), primary_key=True, index=True)
     value = Column(Text, nullable=False, default="")
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class TaskAnalysisProgress(Base):
+    __tablename__ = "task_analysis_progress"
+
+    task_id = Column(Integer, ForeignKey("scan_tasks.id"), primary_key=True)
+    status = Column(String(32), nullable=False, default="not_started")
+    finding_total = Column(Integer, nullable=False, default=0)
+    finding_current = Column(Integer, nullable=False, default=0)
+    current_agent = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    agents = Column(JSON, default=dict)

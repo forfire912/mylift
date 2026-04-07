@@ -10,6 +10,7 @@ const SEVERITY_LABEL: Record<string, string> = {
   medium: '中危',
   low: '低危',
   info: '信息',
+  false_positive: '误报',
 }
 
 export default function SeverityBadge({ severity }: SeverityBadgeProps) {

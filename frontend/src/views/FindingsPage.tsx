@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import apiService, { Finding, FindingListResponse } from '../services/api'
 import SeverityBadge from '../components/SeverityBadge'
 import RiskBar from '../components/RiskBar'
+import { useProgress } from '../context/ProgressContext'
 
 const PAGE_SIZE = 20
 
@@ -18,6 +19,9 @@ export default function FindingsPage() {
 
   const [data, setData] = useState<FindingListResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [batchSubmitting, setBatchSubmitting] = useState(false)
+  const { openPanel } = useProgress()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -35,8 +39,12 @@ export default function FindingsPage() {
   }, [taskId, filterTool, filterSeverity, filterVulnerable, page])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => { setSelectedIds([]) }, [taskId, filterTool, filterSeverity, filterVulnerable, page])
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 1
+  const visibleIds = data?.items.map(item => item.id) || []
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.includes(id))
+  const selectedCount = selectedIds.length
 
   const handleMarkFP = async (finding: Finding, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -47,7 +55,60 @@ export default function FindingsPage() {
   const handleAnalyze = async (finding: Finding, e: React.MouseEvent) => {
     e.stopPropagation()
     await apiService.analyzeFinding(finding.id)
+    openPanel(finding.task_id)
     alert(`Finding #${finding.id} 已提交 LLM 分析`)
+  }
+
+  const toggleSelected = (findingId: number, checked: boolean) => {
+    setSelectedIds(prev => checked ? [...new Set([...prev, findingId])] : prev.filter(id => id !== findingId))
+  }
+
+  const toggleSelectVisible = (checked: boolean) => {
+    setSelectedIds(prev => {
+      if (checked) {
+        return [...new Set([...prev, ...visibleIds])]
+      }
+      return prev.filter(id => !visibleIds.includes(id))
+    })
+  }
+
+  const handleBatchAnalyze = async () => {
+    if (selectedIds.length === 0) {
+      alert('请先选择要分析的漏洞')
+      return
+    }
+    if (!window.confirm(`确定要对选中的 ${selectedIds.length} 个漏洞发起批量 LLM 分析吗？`)) return
+    setBatchSubmitting(true)
+    try {
+      await apiService.analyzeFindings(selectedIds)
+      const firstSelected = data?.items.find(item => item.id === selectedIds[0])
+      if (firstSelected) openPanel(firstSelected.task_id)
+      alert(`已提交 ${selectedIds.length} 个漏洞进行 LLM 批量分析`)
+      setSelectedIds([])
+    } catch {
+      alert('批量分析提交失败，请稍后重试')
+    } finally {
+      setBatchSubmitting(false)
+    }
+  }
+
+  const handleBatchMarkFalsePositive = async (isFalsePositive: boolean) => {
+    if (selectedIds.length === 0) {
+      alert(`请先选择要${isFalsePositive ? '标记' : '取消'}的漏洞`)
+      return
+    }
+    if (!window.confirm(`确定要${isFalsePositive ? '标记' : '取消'}这 ${selectedIds.length} 个漏洞的误报状态吗？`)) return
+    setBatchSubmitting(true)
+    try {
+      await apiService.markFalsePositiveBatch(selectedIds, isFalsePositive)
+      alert(`已${isFalsePositive ? '标记' : '取消'} ${selectedIds.length} 个漏洞为误报`)
+      setSelectedIds([])
+      await load()
+    } catch {
+      alert(`批量${isFalsePositive ? '标记' : '取消'}误报失败，请稍后重试`)
+    } finally {
+      setBatchSubmitting(false)
+    }
   }
 
   return (
@@ -82,7 +143,29 @@ export default function FindingsPage() {
         <button className="btn btn-default" onClick={() => { setFilterTool(''); setFilterSeverity(''); setFilterVulnerable(''); setPage(1) }}>
           重置过滤
         </button>
+        <button className="btn btn-toolbar btn-toolbar-primary" onClick={handleBatchAnalyze} disabled={batchSubmitting || selectedIds.length === 0}>
+          {batchSubmitting ? '提交中...' : `LLM 分析${selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}`}
+        </button>
+        <button className="btn btn-toolbar" onClick={() => handleBatchMarkFalsePositive(true)} disabled={batchSubmitting || selectedIds.length === 0}>
+          标记误报{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}
+        </button>
+        <button className="btn btn-toolbar" onClick={() => handleBatchMarkFalsePositive(false)} disabled={batchSubmitting || selectedIds.length === 0}>
+          误报回退{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}
+        </button>
       </div>
+
+      {selectedCount > 0 && (
+        <div className="card" style={{ padding: '10px 16px', marginBottom: 16, background: '#fafafa' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 13, color: '#555' }}>
+              已选择 <strong>{selectedCount}</strong> 条漏洞，当前页共 {visibleIds.length} 条
+            </div>
+            <button className="btn btn-default" onClick={() => setSelectedIds([])} disabled={batchSubmitting}>
+              清空选择
+            </button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="loading">加载中...</div>
@@ -95,6 +178,14 @@ export default function FindingsPage() {
               <table>
                 <thead>
                   <tr>
+                    <th style={{ width: 44 }}>
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        onChange={e => toggleSelectVisible(e.target.checked)}
+                        aria-label="选择当前页全部漏洞"
+                      />
+                    </th>
                     <th>ID</th>
                     <th>工具</th>
                     <th>规则</th>
@@ -108,11 +199,22 @@ export default function FindingsPage() {
                 </thead>
                 <tbody>
                   {data.items.map(f => (
+                    (() => {
+                      const isFalsePositive = f.is_false_positive || f.is_vulnerable === false
+                      return (
                     <tr
                       key={f.id}
-                      style={{ cursor: 'pointer', opacity: f.is_false_positive ? 0.5 : 1 }}
+                      style={{ cursor: 'pointer', opacity: isFalsePositive ? 0.65 : 1 }}
                       onClick={() => navigate(`/findings/${f.id}`)}
                     >
+                      <td onClick={e => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.includes(f.id)}
+                          onChange={e => toggleSelected(f.id, e.target.checked)}
+                          aria-label={`选择漏洞 ${f.id}`}
+                        />
+                      </td>
                       <td style={{ color: '#888', fontSize: 13 }}>#{f.id}</td>
                       <td><span style={{ fontSize: 12 }}>{f.tool}</span></td>
                       <td style={{ fontFamily: 'monospace', fontSize: 13 }}>{f.rule_id}</td>
@@ -120,7 +222,7 @@ export default function FindingsPage() {
                         {f.file_path && `${f.file_path}:${f.line_start}`}
                       </td>
                       <td><SeverityBadge severity={f.sast_severity} /></td>
-                      <td><SeverityBadge severity={f.final_severity} /></td>
+                      <td><SeverityBadge severity={isFalsePositive ? 'false_positive' : f.final_severity} /></td>
                       <td style={{ minWidth: 120 }}><RiskBar score={f.risk_score} /></td>
                       <td>
                         {f.is_vulnerable === null ? (
@@ -144,18 +246,18 @@ export default function FindingsPage() {
                           >
                             {f.is_false_positive ? '取消误报' : '标记误报'}
                           </button>
-                          {f.analyzed_at === null && (
-                            <button
-                              className="btn btn-primary"
-                              style={{ fontSize: 12, padding: '2px 8px' }}
-                              onClick={e => handleAnalyze(f, e)}
-                            >
-                              分析
-                            </button>
-                          )}
+                          <button
+                            className="btn btn-primary"
+                            style={{ fontSize: 12, padding: '2px 8px' }}
+                            onClick={e => handleAnalyze(f, e)}
+                          >
+                            {f.analyzed_at === null ? '分析' : '重新分析'}
+                          </button>
                         </div>
                       </td>
                     </tr>
+                      )
+                    })()
                   ))}
                 </tbody>
               </table>
