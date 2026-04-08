@@ -13,11 +13,14 @@ export interface ScanTask {
   created_at: string
   updated_at: string
   finding_count: number
+  issue_group_count: number
 }
 
 export interface Finding {
   id: number
   task_id: number
+  issue_group_id: number | null
+  is_representative: boolean
   rule_id: string | null
   tool: string
   file_path: string | null
@@ -47,7 +50,42 @@ export interface FindingListResponse {
   items: Finding[]
 }
 
+export interface IssueGroup {
+  id: number
+  task_id: number
+  representative_finding_id: number | null
+  tool: string
+  rule_id: string | null
+  file_path: string | null
+  line_start: number | null
+  line_end: number | null
+  message: string | null
+  function_name: string | null
+  member_count: number
+  llm_code_understanding: string | null
+  llm_path_analysis: string | null
+  is_vulnerable: boolean | null
+  llm_confidence: number | null
+  llm_reason: string | null
+  fix_suggestion: string | null
+  patch_suggestion: string | null
+  risk_score: number | null
+  final_severity: string | null
+  is_false_positive: boolean
+  analyzed_at: string | null
+  created_at: string
+  updated_at: string
+  member_ids: number[]
+  member_findings: Finding[]
+}
+
+export interface IssueGroupListResponse {
+  total: number
+  items: IssueGroup[]
+}
+
 export interface Stats {
+  scope: 'finding' | 'issue_group'
   total_findings: number
   analyzed_findings: number
   vulnerable_findings: number
@@ -77,6 +115,8 @@ export interface TaskProgress {
   agents: Record<string, AgentInfo>
 }
 
+export type AnalysisTarget = 'finding' | 'issue_group'
+
 export interface SystemSettings {
   llm_api_key: string
   llm_model: string
@@ -105,32 +145,56 @@ export const apiService = {
   },
   listTasks: () => axiosClient.get<ScanTask[]>('/tasks'),
   getTask: (id: number) => axiosClient.get<ScanTask>(`/tasks/${id}`),
-  analyzeTask: (id: number, findingIds?: number[]) =>
-    axiosClient.post(`/tasks/${id}/analyze`, { finding_ids: findingIds || [] }),
+  analyzeTask: (id: number, options?: { targetType?: AnalysisTarget; findingIds?: number[]; issueGroupIds?: number[] }) =>
+    axiosClient.post(`/tasks/${id}/analyze`, {
+      target_type: options?.targetType || 'finding',
+      finding_ids: options?.findingIds || [],
+      issue_group_ids: options?.issueGroupIds || [],
+    }),
   analyzeFindings: (findingIds: number[]) =>
-    axiosClient.post('/findings/analyze', { finding_ids: findingIds }),
+    axiosClient.post('/findings/analyze', { finding_ids: findingIds, target_type: 'finding' }),
+  analyzeIssueGroups: (issueGroupIds: number[]) =>
+    axiosClient.post('/issue-groups/analyze', { issue_group_ids: issueGroupIds, target_type: 'issue_group' }),
 
   // Findings
   listFindings: (params: {
     task_id?: number
     tool?: string
     severity?: string
+    analyzed?: boolean
     is_vulnerable?: boolean
     is_false_positive?: boolean
     min_risk_score?: number
     page?: number
     page_size?: number
   }) => axiosClient.get<FindingListResponse>('/findings', { params }),
+  listIssueGroups: (params: {
+    task_id?: number
+    tool?: string
+    severity?: string
+    analyzed?: boolean
+    is_vulnerable?: boolean
+    is_false_positive?: boolean
+    min_risk_score?: number
+    page?: number
+    page_size?: number
+  }) => axiosClient.get<IssueGroupListResponse>('/issue-groups', { params }),
   getFinding: (id: number) => axiosClient.get<Finding>(`/findings/${id}`),
+  getIssueGroup: (id: number) => axiosClient.get<IssueGroup>(`/issue-groups/${id}`),
   markFalsePositive: (id: number, isFP: boolean) =>
     axiosClient.patch(`/findings/${id}/false-positive`, null, { params: { is_false_positive: isFP } }),
   markFalsePositiveBatch: (findingIds: number[], isFalsePositive: boolean) =>
     axiosClient.patch('/findings/false-positive', { finding_ids: findingIds, is_false_positive: isFalsePositive }),
+  markIssueGroupFalsePositive: (id: number, isFalsePositive: boolean) =>
+    axiosClient.patch(`/issue-groups/${id}/false-positive`, null, { params: { is_false_positive: isFalsePositive } }),
+  markIssueGroupFalsePositiveBatch: (issueGroupIds: number[], isFalsePositive: boolean) =>
+    axiosClient.patch('/issue-groups/false-positive', { issue_group_ids: issueGroupIds, is_false_positive: isFalsePositive }),
   analyzeFinding: (id: number) => axiosClient.post(`/findings/${id}/analyze`),
+  analyzeIssueGroup: (id: number) => axiosClient.post(`/issue-groups/${id}/analyze`),
 
   // Stats
-  getStats: (taskId?: number) =>
-    axiosClient.get<Stats>('/stats', { params: taskId ? { task_id: taskId } : {} }),
+  getStats: (taskId?: number, scope: AnalysisTarget = 'finding') =>
+    axiosClient.get<Stats>('/stats', { params: { ...(taskId ? { task_id: taskId } : {}), scope } }),
 
   // System Settings
   getSettings: () => axiosClient.get<SystemSettings>('/settings'),

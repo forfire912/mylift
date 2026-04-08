@@ -100,30 +100,32 @@ def _extract_json(text: str) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 AGENT1_SYSTEM = """\
-You are a senior C/C++ security code analyst.
-Given a code snippet and a SAST finding, analyze:
-1. Key variables and their roles
-2. Control flow logic
-3. Data flow paths
-4. Potential dangerous operations
-Return a concise technical summary in plain text."""
+你是一名资深 C/C++ 安全代码分析专家。
+给定代码片段和一条 SAST 发现，请分析：
+1. 关键变量及其作用
+2. 控制流逻辑
+3. 数据流路径
+4. 可能存在风险的操作
+
+所有输出必须使用简体中文。
+请以纯文本返回简洁、技术化的分析结论。"""
 
 AGENT1_USER_TMPL = """\
-SAST Tool: {tool}
-Rule: {rule_id}
-File: {file_path}:{line}
-Message: {message}
-Function: {function_name}
+SAST 工具: {tool}
+规则: {rule_id}
+文件: {file_path}:{line}
+消息: {message}
+函数: {function_name}
 
-Code Snippet:
+代码片段:
 ```
 {code_snippet}
 ```
 
-Please analyze the code structure and describe:
-- Variable relationships
-- Control logic
-- Any suspicious patterns related to the finding"""
+请使用简体中文分析代码结构，并说明：
+- 变量之间的关系
+- 控制逻辑
+- 与该问题相关的可疑模式"""
 
 
 def agent_code_understanding(finding: dict, client: OpenAI | None = None) -> str:
@@ -140,7 +142,7 @@ def agent_code_understanding(finding: dict, client: OpenAI | None = None) -> str
         line=finding.get("line_start", 0),
         message=finding.get("message", ""),
         function_name=finding.get("function_name", ""),
-        code_snippet=finding.get("code_snippet", "(not available)"),
+        code_snippet=finding.get("code_snippet", "（代码片段不可用）"),
     )
     messages = [
         {"role": "system", "content": system},
@@ -150,7 +152,7 @@ def agent_code_understanding(finding: dict, client: OpenAI | None = None) -> str
         return _chat(client, messages, float(cfg.get("llm_temperature", 0.2)), cfg["llm_model"])
     except Exception as e:
         logger.error("Agent1 error: %s", e)
-        return f"Error in code understanding: {e}"
+        return f"代码理解分析失败: {e}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -158,34 +160,37 @@ def agent_code_understanding(finding: dict, client: OpenAI | None = None) -> str
 # ─────────────────────────────────────────────────────────────
 
 AGENT2_SYSTEM = """\
-You are a program analysis expert specializing in execution path feasibility.
-Given a code snippet, execution trace, and a SAST finding, determine:
-1. Whether the reported execution path is actually reachable
-2. If there are missing guard conditions
-3. Whether the path leads to a real vulnerability condition
-Be precise and evidence-based."""
+你是一名程序分析专家，专注于执行路径可达性判断。
+给定代码片段、执行轨迹和一条 SAST 发现，请判断：
+1. 报告中的执行路径是否真实可达
+2. 是否缺少必要的保护条件
+3. 该路径是否会导向真实的漏洞状态
+
+所有输出必须使用简体中文。
+结论要准确，并基于证据。"""
 
 AGENT2_USER_TMPL = """\
-SAST Finding:
-  Tool: {tool}, Rule: {rule_id}
-  Message: {message}
+SAST 问题:
+    工具: {tool}, 规则: {rule_id}
+    消息: {message}
 
-Code Understanding:
+代码理解:
 {code_understanding}
 
-Execution Path from SAST Trace:
+SAST 跟踪中的执行路径:
 {execution_path}
 
-Code Snippet:
+代码片段:
 ```
 {code_snippet}
 ```
 
-Analyze:
-1. Is this execution path feasible?
-2. Are all conditions on the path satisfiable?
-3. Is there a missing null-check, bounds check, or other guard?
-Provide a concise path feasibility assessment."""
+请使用简体中文分析：
+1. 这条执行路径是否可行？
+2. 路径上的条件是否都可满足？
+3. 是否缺少空指针检查、边界检查或其他保护条件？
+
+请给出简洁的路径可行性评估。"""
 
 
 def agent_path_analysis(finding: dict, code_understanding: str, client: OpenAI | None = None) -> str:
@@ -195,14 +200,14 @@ def agent_path_analysis(finding: dict, code_understanding: str, client: OpenAI |
         client = _get_client(cfg)
     system = cfg["agent2_system"]
     tmpl = cfg["agent2_user_tmpl"]
-    path_str = "\n".join(finding.get("execution_path", [])) or "(no trace available)"
+    path_str = "\n".join(finding.get("execution_path", [])) or "（无可用执行轨迹）"
     prompt = tmpl.format(
         tool=finding.get("tool", ""),
         rule_id=finding.get("rule_id", ""),
         message=finding.get("message", ""),
         code_understanding=code_understanding,
         execution_path=path_str,
-        code_snippet=finding.get("code_snippet", "(not available)"),
+        code_snippet=finding.get("code_snippet", "（代码片段不可用）"),
     )
     messages = [
         {"role": "system", "content": system},
@@ -212,7 +217,7 @@ def agent_path_analysis(finding: dict, code_understanding: str, client: OpenAI |
         return _chat(client, messages, float(cfg.get("llm_temperature", 0.2)), cfg["llm_model"])
     except Exception as e:
         logger.error("Agent2 error: %s", e)
-        return f"Error in path analysis: {e}"
+        return f"执行路径分析失败: {e}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -220,35 +225,34 @@ def agent_path_analysis(finding: dict, code_understanding: str, client: OpenAI |
 # ─────────────────────────────────────────────────────────────
 
 AGENT3_SYSTEM = """\
-You are a vulnerability assessment expert.
-Based on code analysis and path analysis, make a definitive judgment on whether
-a SAST finding represents a real vulnerability or a false positive.
+你是一名漏洞评估专家。
+请基于代码分析和路径分析，明确判断一条 SAST 发现是真实漏洞还是误报。
 
-You MUST respond with ONLY a valid JSON object in this exact format:
+你必须只返回一个合法的 JSON 对象，格式必须严格如下，且其中的说明文字内容必须使用简体中文：
 {
   "is_vulnerable": true or false,
   "confidence": 0.0 to 1.0,
-  "reason": "concise explanation",
-  "false_positive_indicators": ["list of reasons if false positive"],
-  "true_positive_indicators": ["list of reasons if true positive"]
+    "reason": "简洁说明",
+    "false_positive_indicators": ["如果是误报，请列出原因"],
+    "true_positive_indicators": ["如果是真实漏洞，请列出原因"]
 }"""
 
 AGENT3_USER_TMPL = """\
-SAST Finding:
-  Tool: {tool}
-  Rule: {rule_id}
-  Severity: {severity}
-  File: {file_path}:{line}
-  Message: {message}
+SAST 问题:
+    工具: {tool}
+    规则: {rule_id}
+    严重级别: {severity}
+    文件: {file_path}:{line}
+    消息: {message}
 
-Code Understanding:
+代码理解:
 {code_understanding}
 
-Path Analysis:
+路径分析:
 {path_analysis}
 
-Based on all evidence, is this a real vulnerability or false positive?
-Respond with JSON only."""
+请基于全部证据判断这是真实漏洞还是误报。
+只返回 JSON，不要附加其他文字；JSON 中的说明字段内容必须使用简体中文。"""
 
 
 def agent_vulnerability_judgment(
@@ -292,7 +296,7 @@ def agent_vulnerability_judgment(
         return {
             "is_vulnerable": True,
             "confidence": 0.5,
-            "reason": f"LLM analysis failed: {e}",
+            "reason": f"LLM 分析失败: {e}",
             "false_positive_indicators": [],
             "true_positive_indicators": [],
         }
@@ -303,33 +307,35 @@ def agent_vulnerability_judgment(
 # ─────────────────────────────────────────────────────────────
 
 AGENT4_SYSTEM = """\
-You are a secure coding expert. Given a confirmed vulnerability, provide:
-1. A clear explanation of the risk
-2. A concrete fix suggestion with example patch
-3. Best practices to prevent similar issues
-Be specific and actionable."""
+你是一名安全编码专家。对于已确认的问题，请提供：
+1. 清晰的风险说明
+2. 具体的修复建议以及示例补丁
+3. 可用于避免类似问题的最佳实践
+
+所有输出必须使用简体中文。
+结论要具体、可执行。"""
 
 AGENT4_USER_TMPL = """\
-Vulnerability:
-  Tool: {tool}
-  Rule: {rule_id}
-  File: {file_path}:{line}
-  Message: {message}
+问题信息:
+    工具: {tool}
+    规则: {rule_id}
+    文件: {file_path}:{line}
+    消息: {message}
 
-Vulnerability Assessment:
-  Is Vulnerable: {is_vulnerable}
-  Confidence: {confidence}
-  Reason: {reason}
+漏洞评估:
+    是否为真实漏洞: {is_vulnerable}
+    置信度: {confidence}
+    原因: {reason}
 
-Code Snippet:
+代码片段:
 ```
 {code_snippet}
 ```
 
-Please provide:
-1. Risk explanation (2-3 sentences)
-2. Fix suggestion with code patch
-3. Prevention best practices"""
+请使用简体中文提供：
+1. 风险说明（2 到 3 句话）
+2. 带代码补丁示例的修复建议
+3. 预防最佳实践"""
 
 
 def agent_fix_suggestion(
@@ -352,7 +358,7 @@ def agent_fix_suggestion(
         is_vulnerable=judgment.get("is_vulnerable", True),
         confidence=judgment.get("confidence", 0.5),
         reason=judgment.get("reason", ""),
-        code_snippet=finding.get("code_snippet", "(not available)"),
+        code_snippet=finding.get("code_snippet", "（代码片段不可用）"),
     )
     messages = [
         {"role": "system", "content": system},
@@ -369,7 +375,7 @@ def agent_fix_suggestion(
     except Exception as e:
         logger.error("Agent4 error: %s", e)
         return {
-            "fix_suggestion": f"Fix suggestion unavailable: {e}",
+            "fix_suggestion": f"修复建议不可用: {e}",
             "patch_suggestion": "",
         }
 

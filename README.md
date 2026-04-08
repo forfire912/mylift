@@ -89,6 +89,26 @@ docker-compose up -d
 
 ### 方式二：本地开发
 
+Windows 下如果希望启动后当前终端可以继续输入命令，请优先使用仓库根目录的启动脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start.ps1
+```
+
+该脚本会立即释放当前终端，并在后台继续完成后端与前端启动。
+
+如果你在 `cmd` 里操作，可以直接运行：
+
+```bat
+start.cmd
+```
+
+说明：直接执行 `uvicorn backend.main:app --reload` 或 `npm run dev` 会以前台方式运行开发服务器，当前终端会被占用，这是这类命令的正常行为，不是程序假死。停止服务可用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\stop.ps1
+```
+
 **后端：**
 ```bash
 cd backend

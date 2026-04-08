@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import apiService, { Stats } from '../services/api'
+import apiService, { AnalysisTarget, Stats } from '../services/api'
 import {
   PieChart, Pie, Cell, Tooltip, Legend,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer,
@@ -20,11 +20,12 @@ export default function StatsPage() {
   const [loading, setLoading] = useState(true)
   const [searchParams] = useSearchParams()
   const taskId = searchParams.get('task_id') ? parseInt(searchParams.get('task_id')!) : undefined
+  const [scope, setScope] = useState<AnalysisTarget>((searchParams.get('scope') as AnalysisTarget) || 'issue_group')
 
   useEffect(() => {
     setLoading(true)
-    apiService.getStats(taskId).then(r => setStats(r.data)).finally(() => setLoading(false))
-  }, [taskId])
+    apiService.getStats(taskId, scope).then(r => setStats(r.data)).finally(() => setLoading(false))
+  }, [scope, taskId])
 
   if (loading) return <div className="loading">加载中...</div>
   if (!stats) return <div className="empty-state">暂无统计数据</div>
@@ -51,17 +52,27 @@ export default function StatsPage() {
     { name: '未判定', value: stats.analyzed_findings - stats.vulnerable_findings - stats.false_positive_findings },
   ]
 
+  const unitLabel = scope === 'issue_group' ? '问题组' : '漏洞'
+
   return (
     <div>
       <div className="page-header">
         <h1 className="page-title">统计分析</h1>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className={scope === 'issue_group' ? 'btn btn-primary' : 'btn btn-default'} onClick={() => setScope('issue_group')}>
+            问题组视图
+          </button>
+          <button className={scope === 'finding' ? 'btn btn-primary' : 'btn btn-default'} onClick={() => setScope('finding')}>
+            原始漏洞视图
+          </button>
+        </div>
       </div>
 
       {/* KPI Cards */}
       <div className="stat-grid">
         <div className="stat-card">
           <div className="stat-value">{stats.total_findings}</div>
-          <div className="stat-label">总漏洞数</div>
+          <div className="stat-label">总{unitLabel}数</div>
         </div>
         <div className="stat-card">
           <div className="stat-value" style={{ color: '#52c41a' }}>{stats.analyzed_findings}</div>
@@ -113,7 +124,7 @@ export default function StatsPage() {
                 <XAxis dataKey="name" />
                 <YAxis />
                 <Tooltip />
-                <Bar dataKey="count" fill="#1677ff" name="漏洞数" />
+                <Bar dataKey="count" fill="#1677ff" name={`${unitLabel}数`} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -157,7 +168,7 @@ export default function StatsPage() {
       <div className="card">
         <h3 className="section-title">分析摘要</h3>
         <div style={{ fontSize: 14, lineHeight: 2, color: '#555' }}>
-          <p>✅ 共扫描 <strong>{stats.total_findings}</strong> 个潜在问题，已完成 LLM 分析 <strong>{stats.analyzed_findings}</strong> 个。</p>
+          <p>✅ 共统计 <strong>{stats.total_findings}</strong> 个{unitLabel}，已完成 LLM 分析 <strong>{stats.analyzed_findings}</strong> 个。</p>
           <p>⚠️ 确认为真实漏洞: <strong style={{ color: '#cf1322' }}>{stats.vulnerable_findings}</strong> 个，
             误报: <strong style={{ color: '#52c41a' }}>{stats.false_positive_findings}</strong> 个。</p>
           <p>📊 LLM 辅助误报率: <strong style={{ color: '#1677ff' }}>{stats.false_positive_rate}%</strong>，

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import copy
-import datetime
 
 from sqlalchemy import func
 
 from backend.database import engine, SessionLocal
 from backend.models import Finding, ScanTask, TaskAnalysisProgress
+from backend.timeutils import utc_now, utc_now_iso
 
 AGENT_META = {
     1: "代码理解",
@@ -46,6 +46,93 @@ def _ensure_progress_table() -> None:
     TaskAnalysisProgress.__table__.create(bind=engine, checkfirst=True)
 
 
+def _mark_running_agents_interrupted(agents: dict[str, dict] | None) -> dict[str, dict]:
+    normalized = copy.deepcopy(agents or _default_agents())
+    now = utc_now_iso()
+    for agent in normalized.values():
+        status = agent.get("status")
+        if status not in ("running", "pending"):
+            continue
+        agent["status"] = "error"
+        agent["finished_at"] = now
+        existing_output = (agent.get("output") or "").strip()
+        interrupt_note = "服务重启导致分析中断，请重新发起分析。" if status == "running" else "服务重启导致分析未完成。"
+        agent["output"] = f"{existing_output}\n{interrupt_note}".strip()
+    return normalized
+
+
+def _has_running_agent(agents: dict[str, dict] | None) -> bool:
+    return any((agent or {}).get("status") == "running" for agent in (agents or {}).values())
+
+
+def _has_unfinished_agent(agents: dict[str, dict] | None) -> bool:
+    return any((agent or {}).get("status") in ("running", "pending") for agent in (agents or {}).values())
+
+
+def _normalize_stale_progress_record(record: TaskAnalysisProgress, analyzed: int, total: int) -> None:
+    record.status = "error"
+    record.finding_total = total
+    record.finding_current = analyzed
+    record.current_agent = 0
+    record.finished_at = utc_now()
+    record.agents = _mark_running_agents_interrupted(record.agents)
+
+
+def recover_interrupted_progress() -> int:
+    _ensure_progress_table()
+    db = SessionLocal()
+    try:
+        running_records = (
+            db.query(TaskAnalysisProgress)
+            .filter(TaskAnalysisProgress.status == "running")
+            .all()
+        )
+        task_ids = {record.task_id for record in running_records}
+        analyzing_tasks = (
+            db.query(ScanTask)
+            .filter(ScanTask.status == "analyzing")
+            .all()
+        )
+        stale_agent_records = db.query(TaskAnalysisProgress).all()
+        task_ids.update(task.id for task in analyzing_tasks)
+        task_ids.update(record.task_id for record in stale_agent_records if _has_unfinished_agent(record.agents))
+
+        if not task_ids:
+            return 0
+
+        now = utc_now()
+        recovered = 0
+        for task_id in task_ids:
+            task = db.query(ScanTask).filter(ScanTask.id == task_id).first()
+            record = db.query(TaskAnalysisProgress).filter(TaskAnalysisProgress.task_id == task_id).first()
+            analyzed = (
+                db.query(func.count(Finding.id))
+                .filter(Finding.task_id == task_id, Finding.analyzed_at.isnot(None))
+                .scalar()
+                or 0
+            )
+            total = db.query(func.count(Finding.id)).filter(Finding.task_id == task_id).scalar() or 0
+
+            if record is None:
+                record = TaskAnalysisProgress(task_id=task_id)
+                db.add(record)
+
+            had_unfinished_agent = _has_unfinished_agent(record.agents)
+            _normalize_stale_progress_record(record, analyzed, total)
+
+            if task is not None and task.status == "analyzing":
+                task.status = "error"
+            elif task is not None and had_unfinished_agent:
+                task.status = "error"
+
+            recovered += 1
+
+        db.commit()
+        return recovered
+    finally:
+        db.close()
+
+
 def init_task_progress(task_id: int, total: int) -> None:
     _ensure_progress_table()
     db = SessionLocal()
@@ -58,7 +145,7 @@ def init_task_progress(task_id: int, total: int) -> None:
         record.finding_total = total
         record.finding_current = 0
         record.current_agent = 0
-        record.started_at = datetime.datetime.utcnow()
+        record.started_at = utc_now()
         record.finished_at = None
         record.agents = _default_agents()
         db.commit()
@@ -90,7 +177,7 @@ def set_agent_status(
         agent["status"] = status
         if output is not None:
             agent["output"] = output[:2000]
-        now = datetime.datetime.utcnow().isoformat()
+        now = utc_now_iso()
         if status == "running":
             agent["started_at"] = now
             agent["finished_at"] = None
@@ -117,7 +204,7 @@ def finish_task_progress(task_id: int, status: str = "done") -> None:
             record.finding_current = record.finding_total
         record.status = status
         record.current_agent = 0
-        record.finished_at = datetime.datetime.utcnow()
+        record.finished_at = utc_now()
         db.commit()
     finally:
         db.close()
@@ -141,6 +228,32 @@ def get_task_progress_snapshot(task_id: int) -> dict:
     db = SessionLocal()
     try:
         record = db.query(TaskAnalysisProgress).filter(TaskAnalysisProgress.task_id == task_id).first()
+        task = db.query(ScanTask).filter(ScanTask.id == task_id).first()
+
+        if record is not None and record.status == "running" and (task is None or task.status != "analyzing"):
+            analyzed = (
+                db.query(func.count(Finding.id))
+                .filter(Finding.task_id == task_id, Finding.analyzed_at.isnot(None))
+                .scalar()
+                or 0
+            )
+            total = db.query(func.count(Finding.id)).filter(Finding.task_id == task_id).scalar() or record.finding_total or 0
+            _normalize_stale_progress_record(record, analyzed, total)
+            db.commit()
+
+        if record is not None and record.status != "running" and _has_unfinished_agent(record.agents):
+            analyzed = (
+                db.query(func.count(Finding.id))
+                .filter(Finding.task_id == task_id, Finding.analyzed_at.isnot(None))
+                .scalar()
+                or 0
+            )
+            total = db.query(func.count(Finding.id)).filter(Finding.task_id == task_id).scalar() or record.finding_total or 0
+            _normalize_stale_progress_record(record, analyzed, total)
+            if task is not None:
+                task.status = "error"
+            db.commit()
+
         if record is not None:
             return {
                 "task_id": task_id,
@@ -153,7 +266,6 @@ def get_task_progress_snapshot(task_id: int) -> dict:
                 "agents": copy.deepcopy(record.agents or {}),
             }
 
-        task = db.query(ScanTask).filter(ScanTask.id == task_id).first()
         if task is None:
             return _empty_progress(task_id)
 

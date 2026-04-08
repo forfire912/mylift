@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import apiService, { ScanTask } from '../services/api'
+import apiService, { AnalysisTarget, ScanTask } from '../services/api'
 import UploadTaskModal from '../components/UploadTaskModal'
 import { useProgress } from '../context/ProgressContext'
 
@@ -9,6 +9,7 @@ export default function TaskListPage() {
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [analyzingId, setAnalyzingId] = useState<number | null>(null)
+  const [analysisTarget, setAnalysisTarget] = useState<AnalysisTarget>('issue_group')
   const navigate = useNavigate()
   const { openPanel } = useProgress()
 
@@ -27,7 +28,7 @@ export default function TaskListPage() {
   const handleAnalyze = async (task: ScanTask) => {
     setAnalyzingId(task.id)
     try {
-      await apiService.analyzeTask(task.id)
+      await apiService.analyzeTask(task.id, { targetType: analysisTarget })
       openPanel(task.id)
     } catch {
       alert('提交分析失败，请检查服务是否正常运行')
@@ -57,6 +58,10 @@ export default function TaskListPage() {
       <div className="page-header">
         <h1 className="page-title">扫描任务</h1>
         <div style={{ display: 'flex', gap: 10 }}>
+          <select className="form-select" value={analysisTarget} onChange={e => setAnalysisTarget(e.target.value as AnalysisTarget)}>
+            <option value="issue_group">分析对象: 问题组</option>
+            <option value="finding">分析对象: 单条漏洞</option>
+          </select>
           <button
             className="btn btn-default"
             style={{ color: '#ff4d4f', borderColor: '#ff4d4f' }}
@@ -86,6 +91,7 @@ export default function TaskListPage() {
                   <th>工具</th>
                   <th>状态</th>
                   <th>发现数量</th>
+                  <th>归并后问题组</th>
                   <th>创建时间</th>
                   <th>操作</th>
                 </tr>
@@ -116,6 +122,7 @@ export default function TaskListPage() {
                       </span>
                     </td>
                     <td>{task.finding_count}</td>
+                    <td>{task.issue_group_count}</td>
                     <td style={{ fontSize: 13, color: '#888' }}>
                       {new Date(task.created_at).toLocaleString('zh-CN')}
                     </td>
@@ -134,7 +141,7 @@ export default function TaskListPage() {
                           onClick={() => handleAnalyze(task)}
                           disabled={analyzingId === task.id}
                         >
-                          {analyzingId === task.id ? '提交中...' : 'LLM 分析'}
+                          {analyzingId === task.id ? '提交中...' : analysisTarget === 'issue_group' ? '分析问题组' : '分析漏洞'}
                         </button>
                       </div>
                     </td>

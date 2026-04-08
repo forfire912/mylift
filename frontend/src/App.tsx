@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import TaskListPage from './views/TaskListPage'
 import FindingsPage from './views/FindingsPage'
 import FindingDetailPage from './views/FindingDetailPage'
+import IssueGroupDetailPage from './views/IssueGroupDetailPage'
 import StatsPage from './views/StatsPage'
 import SettingsPage from './views/SettingsPage'
 import { ProgressProvider } from './context/ProgressContext'
@@ -25,6 +26,7 @@ export default function App() {
               <Route path="/" element={<TaskListPage />} />
               <Route path="/findings" element={<FindingsPage />} />
               <Route path="/findings/:id" element={<FindingDetailPage />} />
+              <Route path="/issue-groups/:id" element={<IssueGroupDetailPage />} />
               <Route path="/stats" element={<StatsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>

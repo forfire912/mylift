@@ -52,6 +52,11 @@ export default function FindingDetailPage() {
       <div style={{ marginBottom: 20 }}>
         <button className="btn btn-default" onClick={() => navigate(-1)} style={{ marginRight: 12 }}>← 返回</button>
         <span style={{ color: '#888', fontSize: 14 }}>漏洞详情 #{finding.id}</span>
+        {finding.issue_group_id && (
+          <button className="btn btn-default" onClick={() => navigate(`/issue-groups/${finding.issue_group_id}`)} style={{ marginLeft: 12 }}>
+            查看所属问题组
+          </button>
+        )}
       </div>
 
       {/* Header */}
@@ -82,7 +87,7 @@ export default function FindingDetailPage() {
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-default" onClick={handleMarkFP}>
-              {finding.is_false_positive ? '取消误报标记' : '标记为误报'}
+              {finding.is_false_positive ? '误报回退' : '标记误报'}
             </button>
             {!finding.analyzed_at && (
               <button className="btn btn-primary" onClick={handleAnalyze} disabled={analyzing}>

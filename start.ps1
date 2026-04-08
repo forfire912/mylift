@@ -1,6 +1,10 @@
 ﻿# MyLift start script
 # Usage: powershell -ExecutionPolicy Bypass -File start.ps1
 
+param(
+    [switch]$Detached
+)
+
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $FRONTEND = Join-Path $ROOT "frontend"
 $PIDFILE  = Join-Path $ROOT ".pids"
@@ -10,6 +14,21 @@ $BACKEND_LOG = Join-Path $LOGDIR "backend.log"
 $BACKEND_ERR = Join-Path $LOGDIR "backend.err.log"
 $FRONTEND_LOG = Join-Path $LOGDIR "frontend.log"
 $FRONTEND_ERR = Join-Path $LOGDIR "frontend.err.log"
+
+if (-not $Detached) {
+    $launcher = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if (-not $launcher) {
+        Write-Host "无法找到 powershell.exe，无法在后台启动。" -ForegroundColor Red
+        exit 1
+    }
+
+    Start-Process -FilePath $launcher.Source -WorkingDirectory $ROOT -ArgumentList @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "-Detached") -WindowStyle Hidden | Out-Null
+
+    Write-Host "MyLift 已在后台启动，当前终端可继续使用。" -ForegroundColor Green
+    Write-Host "日志目录: $LOGDIR" -ForegroundColor DarkGray
+    Write-Host "停止命令: powershell -ExecutionPolicy Bypass -File stop.ps1" -ForegroundColor DarkGray
+    exit 0
+}
 
 if (-not (Test-Path $PIDFILE)) { New-Item -ItemType Directory -Path $PIDFILE | Out-Null }
 if (-not (Test-Path $LOGDIR)) { New-Item -ItemType Directory -Path $LOGDIR | Out-Null }

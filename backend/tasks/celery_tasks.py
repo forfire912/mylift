@@ -53,10 +53,19 @@ def analyze_finding_task(self, finding_id: int):
 
 
 @celery_app.task(bind=True, name="tasks.analyze_task")
-def analyze_task_task(self, task_id: int, finding_ids: list[int] | None = None):
+def analyze_task_task(
+    self,
+    task_id: int,
+    finding_ids: list[int] | None = None,
+    issue_group_ids: list[int] | None = None,
+    target_type: str = "finding",
+):
     """Async task: Analyze all findings for a scan task."""
-    from backend.api.routes import _analyze_task_sync
+    from backend.api.routes import _analyze_issue_groups_sync, _analyze_task_sync
     try:
+        if target_type == "issue_group":
+            _analyze_issue_groups_sync(task_id, issue_group_ids)
+            return {"task_id": task_id, "issue_group_count": len(issue_group_ids or [])}
         _analyze_task_sync(task_id, finding_ids)
         return {"task_id": task_id, "finding_count": len(finding_ids or [])}
     except Exception as e:

@@ -188,6 +188,85 @@ class TestFindings:
         for item in resp.json()["items"]:
             assert item["tool"] == "cppcheck"
 
+    def test_filter_findings_by_analyzed(self, client):
+        unanalzyed_resp = client.get(f"/api/v1/findings?task_id={self.task_id}&analyzed=false")
+        assert unanalzyed_resp.status_code == 200
+        assert unanalzyed_resp.json()["total"] == 2
+
+        analyzed_resp = client.get(f"/api/v1/findings?task_id={self.task_id}&analyzed=true")
+        assert analyzed_resp.status_code == 200
+        assert analyzed_resp.json()["total"] == 0
+
+
+class TestIssueGroups:
+    @pytest.fixture(autouse=True)
+    def create_task(self, client):
+        resp = client.post("/api/v1/tasks", json={
+            "name": "Issue group test task",
+            "tool": "cppcheck",
+            "raw_input": CPPCHECK_XML,
+        })
+        assert resp.status_code == 201
+        self.task_id = resp.json()["id"]
+        self.issue_group_count = resp.json()["issue_group_count"]
+
+    def test_list_issue_groups(self, client):
+        resp = client.get(f"/api/v1/issue-groups?task_id={self.task_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == self.issue_group_count
+        assert len(data["items"]) == self.issue_group_count
+
+    def test_get_issue_group(self, client):
+        list_resp = client.get(f"/api/v1/issue-groups?task_id={self.task_id}")
+        issue_group_id = list_resp.json()["items"][0]["id"]
+
+        resp = client.get(f"/api/v1/issue-groups/{issue_group_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == issue_group_id
+        assert len(data["member_ids"]) >= 1
+        assert len(data["member_findings"]) == len(data["member_ids"])
+        assert data["member_findings"][0]["issue_group_id"] == issue_group_id
+
+    def test_mark_issue_group_false_positive(self, client):
+        list_resp = client.get(f"/api/v1/issue-groups?task_id={self.task_id}")
+        issue_group = list_resp.json()["items"][0]
+
+        resp = client.patch(f"/api/v1/issue-groups/{issue_group['id']}/false-positive?is_false_positive=true")
+        assert resp.status_code == 200
+        detail = client.get(f"/api/v1/issue-groups/{issue_group['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["is_false_positive"] is True
+
+        for member_id in detail.json()["member_ids"]:
+            finding_detail = client.get(f"/api/v1/findings/{member_id}")
+            assert finding_detail.status_code == 200
+            assert finding_detail.json()["is_false_positive"] is True
+
+        revert = client.patch(f"/api/v1/issue-groups/{issue_group['id']}/false-positive?is_false_positive=false")
+        assert revert.status_code == 200
+
+    def test_batch_issue_group_analyze_requires_ids(self, client):
+        resp = client.post("/api/v1/issue-groups/analyze", json={"issue_group_ids": []})
+        assert resp.status_code == 422
+
+    def test_issue_group_stats_scope(self, client):
+        resp = client.get(f"/api/v1/stats?task_id={self.task_id}&scope=issue_group")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scope"] == "issue_group"
+        assert data["total_findings"] == self.issue_group_count
+
+    def test_filter_issue_groups_by_analyzed(self, client):
+        unanalyzed_resp = client.get(f"/api/v1/issue-groups?task_id={self.task_id}&analyzed=false")
+        assert unanalyzed_resp.status_code == 200
+        assert unanalyzed_resp.json()["total"] == self.issue_group_count
+
+        analyzed_resp = client.get(f"/api/v1/issue-groups?task_id={self.task_id}&analyzed=true")
+        assert analyzed_resp.status_code == 200
+        assert analyzed_resp.json()["total"] == 0
+
 
 class TestStats:
     def test_get_stats(self, client):
